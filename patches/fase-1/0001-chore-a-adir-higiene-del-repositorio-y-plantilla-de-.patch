@@ -1,0 +1,121 @@
+From bbb806046d27bd7d5e215f8e554e4956b2eccd37 Mon Sep 17 00:00:00 2001
+From: CrysDevv <cryssdev@gmail.com>
+Date: Tue, 17 Nov 2026 22:29:23 -0300
+Subject: [PATCH 1/5] =?UTF-8?q?chore:=20a=C3=B1adir=20higiene=20del=20repo?=
+ =?UTF-8?q?sitorio=20y=20plantilla=20de=20variables=20de=20entorno?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ .env.example   | 44 ++++++++++++++++++++++++++++++++++++++++++++
+ .gitattributes |  4 ++++
+ .gitignore     | 34 ++++++++++++++++++++++++++++++++++
+ 3 files changed, 82 insertions(+)
+ create mode 100644 .env.example
+ create mode 100644 .gitattributes
+ create mode 100644 .gitignore
+
+diff --git a/.env.example b/.env.example
+new file mode 100644
+index 0000000..2724d21
+--- /dev/null
++++ b/.env.example
+@@ -0,0 +1,44 @@
++# ===== General =====
++NODE_ENV=production
++CORE_PORT=3000
++FRONTEND_PORT=5173
++LOG_LEVEL=info
++
++# ===== PostgreSQL 16 =====
++POSTGRES_DB=agentic_platform
++POSTGRES_USER=agentic_app
++POSTGRES_PASSWORD=cambiar_password_postgres_32chars
++POSTGRES_PORT=5432
++
++# ===== Redis 7 =====
++REDIS_PASSWORD=cambiar_password_redis_32chars
++REDIS_PORT=6379
++
++# ===== LocalStack (AWS local, costo $0) =====
++AWS_REGION=us-east-2
++AWS_ACCESS_KEY_ID=test
++AWS_SECRET_ACCESS_KEY=test
++AWS_ENDPOINT_URL=http://localstack:4566
++S3_BUCKET=agentic-artifacts
++SQS_QUEUE_NAME=agentic-tasks
++SQS_DLQ_NAME=agentic-tasks-dlq
++
++# ===== Seguridad =====
++JWT_SECRET=cambiar_jwt_secret_minimo_64_caracteres_aleatorios_0123456789abcdef
++JWT_EXPIRES_IN=15m
++WEBHOOK_HMAC_SECRET=cambiar_webhook_hmac_secret_minimo_32_caracteres
++RATE_LIMIT_MAX=60
++RATE_LIMIT_WINDOW_SECONDS=60
++
++# ===== Adaptador LLM =====
++# local-deterministic (costo $0) | anthropic
++LLM_PROVIDER=local-deterministic
++ANTHROPIC_API_KEY=
++ANTHROPIC_MODEL=claude-sonnet-4-5
++
++# ===== Observabilidad =====
++OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
++OTEL_SERVICE_NAME=core-nestjs
++
++# ===== Frontend =====
++VITE_API_BASE_URL=http://localhost:3000
+diff --git a/.gitattributes b/.gitattributes
+new file mode 100644
+index 0000000..9c0b004
+--- /dev/null
++++ b/.gitattributes
+@@ -0,0 +1,4 @@
++* text=auto eol=lf
++patches/** linguist-generated=true
++*.sh linguist-vendored
++*.sh text eol=lf
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..2946b09
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,34 @@
++# Scripts generadores
++generate_fase_*.sh
++
++# Dependencias y compilados
++node_modules/
++dist/
++build/
++coverage/
++*.tsbuildinfo
++
++# Terraform
++.terraform/
++*.tfstate
++*.tfstate.*
++*.tfvars
++!terraform.tfvars.example
++crash.log
++
++# Secretos y entorno
++.env
++.env.*
++!.env.example
++*.pem
++*.key
++
++# Logs y sistema
++*.log
++npm-debug.log*
++.DS_Store
++Thumbs.db
++
++# IDE
++.idea/
++.vscode/
+-- 
+2.55.0.windows.2
+

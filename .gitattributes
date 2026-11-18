@@ -1,0 +1,4 @@
+* text=auto eol=lf
+patches/** linguist-generated=true
+*.sh linguist-vendored
+*.sh text eol=lf

@@ -1,0 +1,369 @@
+From fd70b7537cd5bfde2a2cb5dee4ebfbc27418793d Mon Sep 17 00:00:00 2001
+From: CrysDevv <cryssdev@gmail.com>
+Date: Tue, 17 Nov 2026 22:29:24 -0300
+Subject: [PATCH 5/5] =?UTF-8?q?feat(infra):=20a=C3=B1adir=20Terraform=20pa?=
+ =?UTF-8?q?ra=20OCI=20Always=20Free=20y=20AWS=20us-east-2=20a=20costo=20ce?=
+ =?UTF-8?q?ro?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ infra/terraform/main.tf      | 213 +++++++++++++++++++++++++++++++++++
+ infra/terraform/outputs.tf   |  24 ++++
+ infra/terraform/variables.tf |  92 +++++++++++++++
+ 3 files changed, 329 insertions(+)
+ create mode 100644 infra/terraform/main.tf
+ create mode 100644 infra/terraform/outputs.tf
+ create mode 100644 infra/terraform/variables.tf
+
+diff --git a/infra/terraform/main.tf b/infra/terraform/main.tf
+new file mode 100644
+index 0000000..6d64418
+--- /dev/null
++++ b/infra/terraform/main.tf
+@@ -0,0 +1,213 @@
++terraform {
++  required_version = ">= 1.6.0"
++
++  required_providers {
++    oci = {
++      source  = "oracle/oci"
++      version = "~> 6.0"
++    }
++    aws = {
++      source  = "hashicorp/aws"
++      version = "~> 5.0"
++    }
++  }
++}
++
++provider "oci" {
++  tenancy_ocid     = var.tenancy_ocid
++  user_ocid        = var.user_ocid
++  fingerprint      = var.fingerprint
++  private_key_path = var.private_key_path
++  region           = var.oci_region
++}
++
++provider "aws" {
++  region = var.aws_region
++
++  default_tags {
++    tags = {
++      Proyecto  = var.project_name
++      GestionPo = "terraform"
++      Costo     = "free-tier"
++    }
++  }
++}
++
++# =====================================================================
++# Oracle Cloud Infrastructure (Always Free)
++# =====================================================================
++data "oci_identity_availability_domains" "ads" {
++  compartment_id = var.tenancy_ocid
++}
++
++data "oci_core_images" "ubuntu" {
++  compartment_id           = var.compartment_ocid
++  operating_system         = "Canonical Ubuntu"
++  operating_system_version = "22.04"
++  shape                    = var.oci_instance_shape
++  sort_by                  = "TIMECREATED"
++  sort_order               = "DESC"
++}
++
++resource "oci_core_vcn" "main" {
++  compartment_id = var.compartment_ocid
++  display_name   = "${var.project_name}-vcn"
++  cidr_blocks    = ["10.20.0.0/16"]
++  dns_label      = "agentic"
++}
++
++resource "oci_core_internet_gateway" "main" {
++  compartment_id = var.compartment_ocid
++  vcn_id         = oci_core_vcn.main.id
++  display_name   = "${var.project_name}-igw"
++  enabled        = true
++}
++
++resource "oci_core_route_table" "public" {
++  compartment_id = var.compartment_ocid
++  vcn_id         = oci_core_vcn.main.id
++  display_name   = "${var.project_name}-rt-public"
++
++  route_rules {
++    destination       = "0.0.0.0/0"
++    destination_type  = "CIDR_BLOCK"
++    network_entity_id = oci_core_internet_gateway.main.id
++  }
++}
++
++resource "oci_core_security_list" "public" {
++  compartment_id = var.compartment_ocid
++  vcn_id         = oci_core_vcn.main.id
++  display_name   = "${var.project_name}-sl-public"
++
++  egress_security_rules {
++    destination = "0.0.0.0/0"
++    protocol    = "all"
++  }
++
++  ingress_security_rules {
++    protocol = "6"
++    source   = var.admin_cidr
++    tcp_options {
++      min = 22
++      max = 22
++    }
++  }
++
++  ingress_security_rules {
++    protocol = "6"
++    source   = "0.0.0.0/0"
++    tcp_options {
++      min = 80
++      max = 80
++    }
++  }
++
++  ingress_security_rules {
++    protocol = "6"
++    source   = "0.0.0.0/0"
++    tcp_options {
++      min = 443
++      max = 443
++    }
++  }
++}
++
++resource "oci_core_subnet" "public" {
++  compartment_id    = var.compartment_ocid
++  vcn_id            = oci_core_vcn.main.id
++  display_name      = "${var.project_name}-subnet-public"
++  cidr_block        = "10.20.1.0/24"
++  route_table_id    = oci_core_route_table.public.id
++  security_list_ids = [oci_core_security_list.public.id]
++  dns_label         = "pub"
++}
++
++resource "oci_core_instance" "k3s_node" {
++  compartment_id      = var.compartment_ocid
++  availability_domain = data.oci_identity_availability_domains.ads.availability_domains[0].name
++  display_name        = "${var.project_name}-node"
++  shape               = var.oci_instance_shape
++
++  shape_config {
++    ocpus         = var.oci_instance_ocpus
++    memory_in_gbs = var.oci_instance_memory_gbs
++  }
++
++  source_details {
++    source_type             = "image"
++    source_id               = data.oci_core_images.ubuntu.images[0].id
++    boot_volume_size_in_gbs = 100
++  }
++
++  create_vnic_details {
++    subnet_id        = oci_core_subnet.public.id
++    assign_public_ip = true
++  }
++
++  metadata = {
++    ssh_authorized_keys = var.ssh_public_key
++    user_data = base64encode(<<-CLOUDINIT
++      #cloud-config
++      package_update: true
++      packages:
++        - docker.io
++        - docker-compose-v2
++        - fail2ban
++        - ufw
++      runcmd:
++        - systemctl enable --now docker
++        - systemctl enable --now fail2ban
++    CLOUDINIT
++    )
++  }
++}
++
++# =====================================================================
++# AWS us-east-2 (capa gratuita)
++# =====================================================================
++resource "aws_s3_bucket" "artifacts" {
++  bucket = var.s3_bucket_name
++}
++
++resource "aws_s3_bucket_versioning" "artifacts" {
++  bucket = aws_s3_bucket.artifacts.id
++  versioning_configuration {
++    status = "Enabled"
++  }
++}
++
++resource "aws_s3_bucket_server_side_encryption_configuration" "artifacts" {
++  bucket = aws_s3_bucket.artifacts.id
++  rule {
++    apply_server_side_encryption_by_default {
++      sse_algorithm = "AES256"
++    }
++  }
++}
++
++resource "aws_s3_bucket_public_access_block" "artifacts" {
++  bucket                  = aws_s3_bucket.artifacts.id
++  block_public_acls       = true
++  block_public_policy     = true
++  ignore_public_acls      = true
++  restrict_public_buckets = true
++}
++
++resource "aws_sqs_queue" "dlq" {
++  name                      = "${var.project_name}-tasks-dlq"
++  message_retention_seconds = 1209600
++  sqs_managed_sse_enabled   = true
++}
++
++resource "aws_sqs_queue" "tasks" {
++  name                       = "${var.project_name}-tasks"
++  visibility_timeout_seconds = 60
++  message_retention_seconds  = 345600
++  sqs_managed_sse_enabled    = true
++
++  redrive_policy = jsonencode({
++    deadLetterTargetArn = aws_sqs_queue.dlq.arn
++    maxReceiveCount     = 5
++  })
++}
+diff --git a/infra/terraform/outputs.tf b/infra/terraform/outputs.tf
+new file mode 100644
+index 0000000..283495e
+--- /dev/null
++++ b/infra/terraform/outputs.tf
+@@ -0,0 +1,24 @@
++output "oci_instance_public_ip" {
++  description = "IP pública del nodo OCI Always Free"
++  value       = oci_core_instance.k3s_node.public_ip
++}
++
++output "oci_vcn_id" {
++  description = "OCID de la VCN"
++  value       = oci_core_vcn.main.id
++}
++
++output "aws_s3_bucket" {
++  description = "Bucket S3 de artefactos"
++  value       = aws_s3_bucket.artifacts.bucket
++}
++
++output "aws_sqs_tasks_url" {
++  description = "URL de la cola principal de tareas"
++  value       = aws_sqs_queue.tasks.url
++}
++
++output "aws_sqs_dlq_url" {
++  description = "URL de la cola de mensajes muertos"
++  value       = aws_sqs_queue.dlq.url
++}
+diff --git a/infra/terraform/variables.tf b/infra/terraform/variables.tf
+new file mode 100644
+index 0000000..9076da0
+--- /dev/null
++++ b/infra/terraform/variables.tf
+@@ -0,0 +1,92 @@
++variable "project_name" {
++  description = "Nombre base de los recursos"
++  type        = string
++  default     = "agentic-workflow"
++}
++
++# ---- Oracle Cloud ----
++variable "tenancy_ocid" {
++  description = "OCID del tenancy de OCI"
++  type        = string
++}
++
++variable "user_ocid" {
++  description = "OCID del usuario de OCI"
++  type        = string
++}
++
++variable "compartment_ocid" {
++  description = "OCID del compartimento donde se crean los recursos"
++  type        = string
++}
++
++variable "fingerprint" {
++  description = "Huella de la API key de OCI"
++  type        = string
++}
++
++variable "private_key_path" {
++  description = "Ruta a la llave privada de la API key de OCI"
++  type        = string
++}
++
++variable "oci_region" {
++  description = "Región de OCI"
++  type        = string
++  default     = "sa-santiago-1"
++}
++
++variable "oci_instance_shape" {
++  description = "Shape Always Free (Ampere A1)"
++  type        = string
++  default     = "VM.Standard.A1.Flex"
++}
++
++variable "oci_instance_ocpus" {
++  description = "OCPUs (límite Always Free: 4 en total)"
++  type        = number
++  default     = 2
++
++  validation {
++    condition     = var.oci_instance_ocpus >= 1 && var.oci_instance_ocpus <= 4
++    error_message = "Always Free permite entre 1 y 4 OCPUs Ampere A1."
++  }
++}
++
++variable "oci_instance_memory_gbs" {
++  description = "Memoria en GB (límite Always Free: 24 en total)"
++  type        = number
++  default     = 12
++
++  validation {
++    condition     = var.oci_instance_memory_gbs >= 1 && var.oci_instance_memory_gbs <= 24
++    error_message = "Always Free permite hasta 24 GB de memoria Ampere A1."
++  }
++}
++
++variable "ssh_public_key" {
++  description = "Llave pública SSH autorizada en la instancia"
++  type        = string
++}
++
++variable "admin_cidr" {
++  description = "CIDR autorizado para SSH (ej. 203.0.113.10/32)"
++  type        = string
++
++  validation {
++    condition     = var.admin_cidr != "0.0.0.0/0"
++    error_message = "Por seguridad, SSH no puede abrirse a 0.0.0.0/0."
++  }
++}
++
++# ---- AWS ----
++variable "aws_region" {
++  description = "Región de AWS"
++  type        = string
++  default     = "us-east-2"
++}
++
++variable "s3_bucket_name" {
++  description = "Nombre globalmente único del bucket S3 de artefactos"
++  type        = string
++}
+-- 
+2.55.0.windows.2
+
