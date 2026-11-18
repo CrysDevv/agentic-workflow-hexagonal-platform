@@ -1,0 +1,136 @@
+From 425c19fe57b2f4a315195a6a01e63a6c00c579b7 Mon Sep 17 00:00:00 2001
+From: CrysDevv <cryssdev@gmail.com>
+Date: Tue, 17 Nov 2026 22:43:32 -0300
+Subject: [PATCH 3/7] =?UTF-8?q?feat(domain):=20definir=20puertos=20de=20re?=
+ =?UTF-8?q?positorios,=20LLM,=20notificaci=C3=B3n,=20almacenamiento=20y=20?=
+ =?UTF-8?q?cola?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ services/core-nestjs/src/domain/ports.ts | 112 +++++++++++++++++++++++
+ 1 file changed, 112 insertions(+)
+ create mode 100644 services/core-nestjs/src/domain/ports.ts
+
+diff --git a/services/core-nestjs/src/domain/ports.ts b/services/core-nestjs/src/domain/ports.ts
+new file mode 100644
+index 0000000..9c9dc34
+--- /dev/null
++++ b/services/core-nestjs/src/domain/ports.ts
+@@ -0,0 +1,112 @@
++// Puertos (interfaces) del dominio. Sin dependencias de infraestructura.
++import type {
++  AprobacionHumana,
++  EjecucionAgente,
++  EstadoPaso,
++  EventoAuditoria,
++  FlujoDefinicion,
++  JsonObjeto,
++  NombreHerramienta,
++  PasoEjecucion,
++  ProveedorCatalogo,
++} from './entities';
++
++// ---------------- Repositorios ----------------
++export interface FlujoRepositorio {
++  obtenerPorNombre(nombre: string): Promise<FlujoDefinicion | null>;
++  obtenerPorId(id: string): Promise<FlujoDefinicion | null>;
++}
++
++export interface EjecucionRepositorio {
++  /** Upsert por id. */
++  guardar(ejecucion: EjecucionAgente): Promise<void>;
++  obtenerPorId(id: string): Promise<EjecucionAgente | null>;
++  listar(limite: number): Promise<EjecucionAgente[]>;
++}
++
++export interface PasoRepositorio {
++  /** Upsert por id. */
++  guardar(paso: PasoEjecucion): Promise<void>;
++  obtenerPorId(id: string): Promise<PasoEjecucion | null>;
++  listarPorEjecucion(ejecucionId: string): Promise<PasoEjecucion[]>;
++}
++
++export interface AprobacionRepositorio {
++  /** Upsert por id. */
++  guardar(aprobacion: AprobacionHumana): Promise<void>;
++  obtenerPorId(id: string): Promise<AprobacionHumana | null>;
++  listarPendientes(limite: number): Promise<AprobacionHumana[]>;
++  listarPorEjecucion(ejecucionId: string): Promise<AprobacionHumana[]>;
++}
++
++export interface FiltroCatalogo {
++  categoria?: string;
++  texto?: string;
++  sku?: string;
++  limite: number;
++}
++
++export interface CatalogoProveedoresRepositorio {
++  buscar(filtro: FiltroCatalogo): Promise<ProveedorCatalogo[]>;
++}
++
++// ---------------- Servicios externos ----------------
++export interface AuditoriaPuerto {
++  registrar(evento: EventoAuditoria): Promise<void>;
++}
++
++export interface NotificadorPuerto {
++  enviar(destinatario: string, asunto: string, mensaje: string): Promise<void>;
++}
++
++export interface AlmacenPropuestasPuerto {
++  /** Persiste el documento y devuelve su ubicación (por ejemplo s3://bucket/clave). */
++  guardar(clave: string, contenido: JsonObjeto): Promise<string>;
++}
++
++export interface ColaTareasPuerto {
++  encolar(ejecucionId: string, correlationId: string): Promise<void>;
++}
++
++export interface RelojPuerto {
++  ahora(): Date;
++}
++
++export interface GeneradorIdPuerto {
++  nuevo(): string;
++}
++
++// ---------------- Puerto LLM ----------------
++export interface ContextoRazonamiento {
++  readonly ejecucionId: string;
++  readonly flujo: { readonly nombre: string; readonly descripcion: string };
++  readonly entrada: JsonObjeto;
++  readonly herramientas: ReadonlyArray<{ readonly nombre: NombreHerramienta; readonly descripcion: string }>;
++  readonly historial: ReadonlyArray<{
++    readonly orden: number;
++    readonly herramienta: string;
++    readonly entrada: JsonObjeto;
++    readonly salida: JsonObjeto | null;
++    readonly estado: EstadoPaso;
++  }>;
++  readonly pasoActual: number;
++  readonly maxPasos: number;
++}
++
++export type DecisionAgente =
++  | {
++      readonly tipo: 'HERRAMIENTA';
++      /** Cadena libre: puede ser una alucinación del modelo; el motor la valida. */
++      readonly herramienta: string;
++      readonly entrada: JsonObjeto;
++      readonly razonamiento: string;
++    }
++  | {
++      readonly tipo: 'FINAL';
++      readonly resultado: JsonObjeto;
++      readonly razonamiento: string;
++    };
++
++export interface LlmPuerto {
++  decidir(contexto: ContextoRazonamiento): Promise<DecisionAgente>;
++}
+-- 
+2.55.0.windows.2
+

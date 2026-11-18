@@ -1,0 +1,217 @@
+import { ErrorInyeccionPrompt, type SeveridadAuditoria } from '../../domain/entities';
+
+export interface ResultadoGuardrail {
+  readonly bloqueado: boolean;
+  readonly puntaje: number;
+  readonly severidad: SeveridadAuditoria;
+  readonly reglas: readonly string[];
+}
+
+interface Regla {
+  readonly id: string;
+  readonly peso: number;
+  readonly patron: RegExp;
+}
+
+// Los patrones operan sobre texto normalizado (minúsculas, sin diacríticos ni caracteres invisibles).
+const REGLAS: readonly Regla[] = [
+  {
+    id: 'IGNORAR_INSTRUCCIONES',
+    peso: 5,
+    patron:
+      /\b(ignor\w*|olvid\w*|descart\w*|omit\w*|disregard|forget|override)\b[^.\n]{0,40}\b(instruccion\w*|reglas?|directrices|indicaciones|instructions?|rules?|prompts?|guidelines?)\b/,
+  },
+  {
+    id: 'REVELAR_PROMPT',
+    peso: 5,
+    patron:
+      /\b(revela\w*|muestra\w*|imprime\w*|repite\w*|reveal|show|print|repeat|leak|dump)\b[^.\n]{0,40}\b(system prompt|prompt del sistema|prompt de sistema|instrucciones (del|de) sistema|instrucciones internas|hidden instructions|your instructions|tus instrucciones)\b/,
+  },
+  {
+    id: 'SUPLANTAR_ROL',
+    peso: 3,
+    patron:
+      /\b(you are now|ahora eres|a partir de ahora (eres|actua)|actua como|act as|pretend to be|finge ser|simula ser)\b/,
+  },
+  {
+    id: 'JAILBREAK',
+    peso: 5,
+    patron:
+      /\b(jailbreak|modo desarrollador|developer mode|do anything now|sin restricciones|without restrictions|sin filtros|unfiltered)\b/,
+  },
+  {
+    id: 'ETIQUETAS_DE_ROL',
+    peso: 5,
+    patron:
+      /(<\|?\s*(im_start|im_end|system|endoftext)\s*\|?>|\[\/?inst\]|<<\s*sys\s*>>|^\s*(system|assistant)\s*:|^\s*#{2,}\s*(system|instruction)s?\b)/m,
+  },
+  {
+    id: 'OMITIR_CONTROLES',
+    peso: 5,
+    patron:
+      /\b(omit\w*|salt\w*|evit\w*|bypass|skip|disable|desactiv\w*)\b[^.\n]{0,30}\b(aprobacion|approval|human review|revision humana|validacion humana|umbral|threshold|guardrails?)\b/,
+  },
+  {
+    id: 'EXFILTRAR_SECRETOS',
+    peso: 5,
+    patron:
+      /\b(env\w*|exfiltr\w*|revela\w*|muestra\w*|show|send|leak|dump|print)\b[^.\n]{0,40}\b(api[ _-]?key|apikey|secret\w*|secreto\w*|password|contrasena\w*|token\w*|credenciales|credentials|jwt|hmac)\b/,
+  },
+  {
+    id: 'INVOCAR_HERRAMIENTA_ARBITRARIA',
+    peso: 3,
+    patron:
+      /\b(ejecuta|invoca|llama|call|invoke|run|execute)\b[^.\n]{0,30}\b(herramienta|tool|funcion|function|comando|command|shell|sql)\b/,
+  },
+  {
+    id: 'PAYLOAD_PELIGROSO',
+    peso: 5,
+    patron: /(\bdrop\s+table\b|;\s*--|\brm\s+-rf\b|\bunion\s+select\b|curl\s+[^|\n]*\|\s*(ba)?sh)/,
+  },
+  {
+    id: 'OFUSCACION_BASE64',
+    peso: 2,
+    patron: /[a-z0-9+/]{80,}={0,2}/,
+  },
+];
+
+const UMBRAL_BLOQUEO = 5;
+const MAX_PROFUNDIDAD = 8;
+const MAX_TEXTO_INDIVIDUAL = 20_000;
+const MAX_TEXTO_TOTAL = 100_000;
+const MAX_ELEMENTOS = 500;
+
+interface EstadoRecoleccion {
+  textos: string[];
+  total: number;
+  elementos: number;
+  profundidadExcedida: boolean;
+  truncado: boolean;
+}
+
+export class GuardrailPromptInjection {
+  /** Analiza cualquier valor serializable (texto u objeto anidado) y devuelve el veredicto. */
+  analizar(valor: unknown): ResultadoGuardrail {
+    const estado: EstadoRecoleccion = {
+      textos: [],
+      total: 0,
+      elementos: 0,
+      profundidadExcedida: false,
+      truncado: false,
+    };
+    this.recolectar(valor, 0, estado);
+
+    // Se analiza el conjunto unido para evitar evasión fragmentando el payload en varios campos.
+    const texto = this.normalizar(estado.textos.join('\n'));
+    const reglas: string[] = [];
+    let puntaje = 0;
+
+    for (const regla of REGLAS) {
+      if (regla.patron.test(texto)) {
+        reglas.push(regla.id);
+        puntaje += regla.peso;
+      }
+    }
+    if (estado.profundidadExcedida) {
+      reglas.push('ESTRUCTURA_DEMASIADO_PROFUNDA');
+      puntaje += 5;
+    }
+    if (estado.truncado) {
+      reglas.push('CONTENIDO_EXCESIVO');
+      puntaje += 2;
+    }
+
+    return {
+      bloqueado: puntaje >= UMBRAL_BLOQUEO,
+      puntaje,
+      severidad: this.severidad(puntaje),
+      reglas,
+    };
+  }
+
+  /** Lanza ErrorInyeccionPrompt si el contenido es bloqueado; devuelve el análisis en caso contrario. */
+  asegurar(valor: unknown, contexto: string): ResultadoGuardrail {
+    const resultado = this.analizar(valor);
+    if (resultado.bloqueado) {
+      throw new ErrorInyeccionPrompt(contexto, resultado.reglas, resultado.puntaje);
+    }
+    return resultado;
+  }
+
+  /**
+   * Encapsula contenido no confiable (salidas de herramientas, entradas de usuario) con delimitadores
+   * explícitos para que el adaptador LLM lo trate siempre como datos y nunca como instrucciones.
+   */
+  envolverContenidoNoConfiable(origen: string, contenido: unknown): string {
+    const origenSeguro = origen.replace(/[^a-zA-Z0-9_.-]/g, '_').slice(0, 60);
+    const cuerpo = JSON.stringify(contenido ?? null).replace(/<\/?datos_no_confiables[^>]*>/gi, '[etiqueta-eliminada]');
+    return `<datos_no_confiables origen="${origenSeguro}">${cuerpo}</datos_no_confiables>`;
+  }
+
+  private severidad(puntaje: number): SeveridadAuditoria {
+    if (puntaje >= 8) return 'CRITICA';
+    if (puntaje >= UMBRAL_BLOQUEO) return 'ALTA';
+    if (puntaje >= 2) return 'WARN';
+    return 'INFO';
+  }
+
+  private normalizar(texto: string): string {
+    return texto
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[\u200B-\u200F\u2060\uFEFF\u202A-\u202E]/g, '')
+      .toLowerCase()
+      .replace(/[ \t\r\f\v]+/g, ' ')
+      .replace(/\n{3,}/g, '\n\n');
+  }
+
+  private agregarTexto(texto: string, estado: EstadoRecoleccion): void {
+    let fragmento = texto;
+    if (fragmento.length > MAX_TEXTO_INDIVIDUAL) {
+      fragmento = fragmento.slice(0, MAX_TEXTO_INDIVIDUAL);
+      estado.truncado = true;
+    }
+    if (estado.total + fragmento.length > MAX_TEXTO_TOTAL) {
+      estado.truncado = true;
+      return;
+    }
+    estado.total += fragmento.length;
+    estado.textos.push(fragmento);
+  }
+
+  private recolectar(valor: unknown, profundidad: number, estado: EstadoRecoleccion): void {
+    if (profundidad > MAX_PROFUNDIDAD) {
+      estado.profundidadExcedida = true;
+      return;
+    }
+    if (valor === null || valor === undefined) return;
+
+    if (typeof valor === 'string') {
+      this.agregarTexto(valor, estado);
+      return;
+    }
+    if (typeof valor === 'number' || typeof valor === 'boolean') {
+      return;
+    }
+    if (Array.isArray(valor)) {
+      for (const elemento of valor) {
+        if (++estado.elementos > MAX_ELEMENTOS) {
+          estado.truncado = true;
+          return;
+        }
+        this.recolectar(elemento, profundidad + 1, estado);
+      }
+      return;
+    }
+    if (typeof valor === 'object') {
+      for (const [clave, contenido] of Object.entries(valor as Record<string, unknown>)) {
+        if (++estado.elementos > MAX_ELEMENTOS) {
+          estado.truncado = true;
+          return;
+        }
+        this.agregarTexto(clave, estado);
+        this.recolectar(contenido, profundidad + 1, estado);
+      }
+    }
+  }
+}
