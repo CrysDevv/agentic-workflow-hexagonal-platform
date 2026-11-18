@@ -1,0 +1,396 @@
+From ef5135bb50efe1753b0ed8de39ec6489713713c1 Mon Sep 17 00:00:00 2001
+From: CrysDevv <cryssdev@gmail.com>
+Date: Tue, 17 Nov 2026 22:56:34 -0300
+Subject: [PATCH 8/9] =?UTF-8?q?feat(core):=20ensamblar=20m=C3=B3dulo=20hex?=
+ =?UTF-8?q?agonal=20y=20arranque=20endurecido=20de=20NestJS?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ services/core-nestjs/src/app.module.ts | 304 +++++++++++++++++++++++++
+ services/core-nestjs/src/main.ts       |  61 +++++
+ 2 files changed, 365 insertions(+)
+ create mode 100644 services/core-nestjs/src/app.module.ts
+ create mode 100644 services/core-nestjs/src/main.ts
+
+diff --git a/services/core-nestjs/src/app.module.ts b/services/core-nestjs/src/app.module.ts
+new file mode 100644
+index 0000000..f7e0a7b
+--- /dev/null
++++ b/services/core-nestjs/src/app.module.ts
+@@ -0,0 +1,304 @@
++import { S3Client } from '@aws-sdk/client-s3';
++import { SQSClient } from '@aws-sdk/client-sqs';
++import { Inject, Injectable, Logger, Module, type OnApplicationShutdown } from '@nestjs/common';
++import { JwtService } from '@nestjs/jwt';
++import { Redis } from 'ioredis';
++import { Pool } from 'pg';
++import { MotorAgente } from './application/agent/agent-engine';
++import { GuardrailPromptInjection } from './application/guardrails/prompt-injection.guardrail';
++import { crearRegistroHerramientas } from './application/tools/herramientas-comerciales';
++import { RegistroHerramientas } from './application/tools/tool-registry';
++import {
++  ConsultasCasoUso,
++  IniciarEjecucionCasoUso,
++  ProcesarEjecucionCasoUso,
++  ResolverAprobacionCasoUso,
++} from './application/use-cases';
++import { TOKENS, cargarConfig, type AppConfig } from './config/config';
++import type {
++  AlmacenPropuestasPuerto,
++  AprobacionRepositorio,
++  AuditoriaPuerto,
++  CatalogoProveedoresRepositorio,
++  EjecucionRepositorio,
++  FlujoRepositorio,
++  GeneradorIdPuerto,
++  LlmPuerto,
++  NotificadorPuerto,
++  PasoRepositorio,
++  RelojPuerto,
++} from './domain/ports';
++import {
++  AprobacionesControlador,
++  AuthControlador,
++  EjecucionesControlador,
++  MetricasControlador,
++  SaludControlador,
++  WebhooksControlador,
++} from './infrastructure/http/controllers';
++import { ServicioMetricas } from './infrastructure/http/http-support';
++import { LlmAnthropic, LlmLocalDeterminista } from './infrastructure/llm/llm.adapters';
++import {
++  AlmacenS3,
++  GeneradorUuid,
++  NotificadorOutboxS3,
++  RedisCola,
++  RelojSistema,
++  SqsCola,
++  TrabajadorCola,
++  type ColaCompleta,
++  type FuenteTareas,
++} from './infrastructure/messaging/messaging.adapters';
++import {
++  AprobacionPostgres,
++  AuditoriaPostgres,
++  CatalogoPostgres,
++  EjecucionPostgres,
++  FlujoPostgres,
++  PasoPostgres,
++} from './infrastructure/persistence/postgres.adapters';
++import { RegistroClavesApi, VerificadorWebhook } from './infrastructure/security/security';
++
++@Injectable()
++export class CierreRecursos implements OnApplicationShutdown {
++  constructor(
++    @Inject(TOKENS.POOL) private readonly pool: Pool,
++    @Inject(TOKENS.REDIS) private readonly redis: Redis,
++    private readonly trabajador: TrabajadorCola,
++  ) {}
++
++  async onApplicationShutdown(): Promise<void> {
++    await this.trabajador.detener();
++    await Promise.allSettled([this.pool.end(), this.redis.quit()]);
++  }
++}
++
++@Module({
++  controllers: [
++    SaludControlador,
++    MetricasControlador,
++    AuthControlador,
++    EjecucionesControlador,
++    AprobacionesControlador,
++    WebhooksControlador,
++  ],
++  providers: [
++    ServicioMetricas,
++    CierreRecursos,
++
++    // ---------- Configuración e infraestructura base ----------
++    { provide: TOKENS.CONFIG, useFactory: (): AppConfig => cargarConfig() },
++    {
++      provide: TOKENS.POOL,
++      inject: [TOKENS.CONFIG],
++      useFactory: (cfg: AppConfig): Pool => {
++        const pool = new Pool({ connectionString: cfg.databaseUrl, max: 10, idleTimeoutMillis: 30_000 });
++        const log = new Logger('Postgres');
++        pool.on('error', (error) => log.error(`Error en cliente inactivo: ${error.message}`));
++        return pool;
++      },
++    },
++    {
++      provide: TOKENS.REDIS,
++      inject: [TOKENS.CONFIG],
++      useFactory: (cfg: AppConfig): Redis => {
++        const redis = new Redis(cfg.redisUrl, { maxRetriesPerRequest: 3 });
++        const log = new Logger('Redis');
++        redis.on('error', (error: Error) => log.error(`Error de conexión: ${error.message}`));
++        return redis;
++      },
++    },
++    {
++      provide: TOKENS.S3,
++      inject: [TOKENS.CONFIG],
++      useFactory: (cfg: AppConfig): S3Client =>
++        new S3Client({
++          region: cfg.aws.region,
++          endpoint: cfg.aws.endpoint,
++          forcePathStyle: cfg.aws.endpoint !== undefined,
++          credentials: { accessKeyId: cfg.aws.accessKeyId, secretAccessKey: cfg.aws.secretAccessKey },
++        }),
++    },
++    {
++      provide: TOKENS.SQS,
++      inject: [TOKENS.CONFIG],
++      useFactory: (cfg: AppConfig): SQSClient =>
++        new SQSClient({
++          region: cfg.aws.region,
++          endpoint: cfg.aws.endpoint,
++          credentials: { accessKeyId: cfg.aws.accessKeyId, secretAccessKey: cfg.aws.secretAccessKey },
++        }),
++    },
++    { provide: TOKENS.RELOJ, useFactory: (): RelojPuerto => new RelojSistema() },
++    { provide: TOKENS.IDS, useFactory: (): GeneradorIdPuerto => new GeneradorUuid() },
++
++    // ---------- Persistencia ----------
++    { provide: TOKENS.FLUJOS, inject: [TOKENS.POOL], useFactory: (p: Pool): FlujoRepositorio => new FlujoPostgres(p) },
++    {
++      provide: TOKENS.EJECUCIONES,
++      inject: [TOKENS.POOL],
++      useFactory: (p: Pool): EjecucionRepositorio => new EjecucionPostgres(p),
++    },
++    { provide: TOKENS.PASOS, inject: [TOKENS.POOL], useFactory: (p: Pool): PasoRepositorio => new PasoPostgres(p) },
++    {
++      provide: TOKENS.APROBACIONES,
++      inject: [TOKENS.POOL],
++      useFactory: (p: Pool): AprobacionRepositorio => new AprobacionPostgres(p),
++    },
++    {
++      provide: TOKENS.CATALOGO,
++      inject: [TOKENS.POOL],
++      useFactory: (p: Pool): CatalogoProveedoresRepositorio => new CatalogoPostgres(p),
++    },
++    {
++      provide: TOKENS.AUDITORIA,
++      inject: [TOKENS.POOL],
++      useFactory: (p: Pool): AuditoriaPuerto => new AuditoriaPostgres(p),
++    },
++
++    // ---------- Almacenamiento, notificaciones y colas ----------
++    {
++      provide: TOKENS.ALMACEN,
++      inject: [TOKENS.S3, TOKENS.CONFIG],
++      useFactory: (s3: S3Client, cfg: AppConfig): AlmacenPropuestasPuerto => new AlmacenS3(s3, cfg.aws.bucket),
++    },
++    {
++      provide: TOKENS.NOTIFICADOR,
++      inject: [TOKENS.ALMACEN, TOKENS.IDS, TOKENS.RELOJ],
++      useFactory: (a: AlmacenPropuestasPuerto, ids: GeneradorIdPuerto, r: RelojPuerto): NotificadorPuerto =>
++        new NotificadorOutboxS3(a, ids, r),
++    },
++    {
++      provide: TOKENS.COLA,
++      inject: [TOKENS.CONFIG, TOKENS.REDIS, TOKENS.SQS],
++      useFactory: (cfg: AppConfig, redis: Redis, sqs: SQSClient): ColaCompleta =>
++        cfg.queue.driver === 'sqs' ? new SqsCola(sqs, cfg.queue.sqsQueueUrl) : new RedisCola(redis),
++    },
++    { provide: TOKENS.FUENTE, useExisting: TOKENS.COLA },
++
++    // ---------- Aplicación ----------
++    { provide: GuardrailPromptInjection, useFactory: (): GuardrailPromptInjection => new GuardrailPromptInjection() },
++    {
++      provide: TOKENS.LLM,
++      inject: [TOKENS.CONFIG, GuardrailPromptInjection],
++      useFactory: (cfg: AppConfig, guardrail: GuardrailPromptInjection): LlmPuerto =>
++        cfg.llm.provider === 'anthropic'
++          ? new LlmAnthropic(cfg.llm.anthropicApiKey, cfg.llm.anthropicModel, guardrail)
++          : new LlmLocalDeterminista(),
++    },
++    {
++      provide: RegistroHerramientas,
++      inject: [TOKENS.CATALOGO, TOKENS.NOTIFICADOR, TOKENS.ALMACEN, TOKENS.IDS, TOKENS.RELOJ],
++      useFactory: (
++        catalogo: CatalogoProveedoresRepositorio,
++        notificador: NotificadorPuerto,
++        almacen: AlmacenPropuestasPuerto,
++        ids: GeneradorIdPuerto,
++        reloj: RelojPuerto,
++      ): RegistroHerramientas => crearRegistroHerramientas({ catalogo, notificador, almacen, ids, reloj }),
++    },
++    {
++      provide: MotorAgente,
++      inject: [
++        TOKENS.EJECUCIONES,
++        TOKENS.PASOS,
++        TOKENS.APROBACIONES,
++        TOKENS.FLUJOS,
++        TOKENS.LLM,
++        RegistroHerramientas,
++        GuardrailPromptInjection,
++        TOKENS.AUDITORIA,
++        TOKENS.RELOJ,
++        TOKENS.IDS,
++      ],
++      useFactory: (
++        ejecuciones: EjecucionRepositorio,
++        pasos: PasoRepositorio,
++        aprobaciones: AprobacionRepositorio,
++        flujos: FlujoRepositorio,
++        llm: LlmPuerto,
++        herramientas: RegistroHerramientas,
++        guardrail: GuardrailPromptInjection,
++        auditoria: AuditoriaPuerto,
++        reloj: RelojPuerto,
++        ids: GeneradorIdPuerto,
++      ): MotorAgente =>
++        new MotorAgente({ ejecuciones, pasos, aprobaciones, flujos, llm, herramientas, guardrail, auditoria, reloj, ids }),
++    },
++    {
++      provide: IniciarEjecucionCasoUso,
++      inject: [
++        TOKENS.FLUJOS,
++        TOKENS.EJECUCIONES,
++        TOKENS.COLA,
++        GuardrailPromptInjection,
++        TOKENS.AUDITORIA,
++        TOKENS.RELOJ,
++        TOKENS.IDS,
++      ],
++      useFactory: (
++        flujos: FlujoRepositorio,
++        ejecuciones: EjecucionRepositorio,
++        cola: ColaCompleta,
++        guardrail: GuardrailPromptInjection,
++        auditoria: AuditoriaPuerto,
++        reloj: RelojPuerto,
++        ids: GeneradorIdPuerto,
++      ): IniciarEjecucionCasoUso =>
++        new IniciarEjecucionCasoUso(flujos, ejecuciones, cola, guardrail, auditoria, reloj, ids),
++    },
++    {
++      provide: ProcesarEjecucionCasoUso,
++      inject: [MotorAgente],
++      useFactory: (motor: MotorAgente): ProcesarEjecucionCasoUso => new ProcesarEjecucionCasoUso(motor),
++    },
++    {
++      provide: ResolverAprobacionCasoUso,
++      inject: [TOKENS.APROBACIONES, MotorAgente, TOKENS.AUDITORIA, TOKENS.RELOJ],
++      useFactory: (
++        aprobaciones: AprobacionRepositorio,
++        motor: MotorAgente,
++        auditoria: AuditoriaPuerto,
++        reloj: RelojPuerto,
++      ): ResolverAprobacionCasoUso => new ResolverAprobacionCasoUso(aprobaciones, motor, auditoria, reloj),
++    },
++    {
++      provide: ConsultasCasoUso,
++      inject: [TOKENS.EJECUCIONES, TOKENS.PASOS, TOKENS.APROBACIONES],
++      useFactory: (
++        ejecuciones: EjecucionRepositorio,
++        pasos: PasoRepositorio,
++        aprobaciones: AprobacionRepositorio,
++      ): ConsultasCasoUso => new ConsultasCasoUso(ejecuciones, pasos, aprobaciones),
++    },
++    {
++      provide: TrabajadorCola,
++      inject: [TOKENS.FUENTE, ProcesarEjecucionCasoUso, ServicioMetricas],
++      useFactory: (fuente: FuenteTareas, caso: ProcesarEjecucionCasoUso, metricas: ServicioMetricas): TrabajadorCola =>
++        new TrabajadorCola(fuente, caso, (ejecucion) => metricas.ejecucionFinalizada(ejecucion.estado)),
++    },
++
++    // ---------- Seguridad ----------
++    {
++      provide: TOKENS.CLAVES,
++      inject: [TOKENS.CONFIG],
++      useFactory: (cfg: AppConfig): RegistroClavesApi => new RegistroClavesApi(cfg.apiKeys),
++    },
++    {
++      provide: JwtService,
++      inject: [TOKENS.CONFIG],
++      useFactory: (cfg: AppConfig): JwtService =>
++        new JwtService({
++          secret: cfg.jwt.secret,
++          signOptions: { expiresIn: cfg.jwt.expiresIn, algorithm: 'HS256' },
++          verifyOptions: { algorithms: ['HS256'] },
++        }),
++    },
++    {
++      provide: VerificadorWebhook,
++      inject: [TOKENS.CONFIG, TOKENS.REDIS],
++      useFactory: (cfg: AppConfig, redis: Redis): VerificadorWebhook => new VerificadorWebhook(cfg.webhookSecret, redis),
++    },
++  ],
++})
++export class AppModule {}
+diff --git a/services/core-nestjs/src/main.ts b/services/core-nestjs/src/main.ts
+new file mode 100644
+index 0000000..86b1f98
+--- /dev/null
++++ b/services/core-nestjs/src/main.ts
+@@ -0,0 +1,61 @@
++import 'reflect-metadata';
++import type { LogLevel } from '@nestjs/common';
++import { NestFactory } from '@nestjs/core';
++import type { NestExpressApplication } from '@nestjs/platform-express';
++import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
++import { NodeSDK } from '@opentelemetry/sdk-node';
++import helmet from 'helmet';
++import { AppModule } from './app.module';
++import { cargarConfig } from './config/config';
++import { FiltroProblemas, ServicioMetricas, crearMiddlewareMetricas, middlewareCorrelacion } from './infrastructure/http/http-support';
++
++function nivelesLog(nivel: string): LogLevel[] {
++  const orden: LogLevel[] = ['error', 'warn', 'log', 'debug', 'verbose'];
++  const mapa: Record<string, number> = { error: 0, warn: 1, info: 2, debug: 3, verbose: 4 };
++  const limite = mapa[nivel] ?? 2;
++  return orden.slice(0, limite + 1);
++}
++
++async function arrancar(): Promise<void> {
++  const cfg = cargarConfig();
++
++  const sdk = new NodeSDK({
++    serviceName: cfg.otel.serviceName,
++    traceExporter: new OTLPTraceExporter({ url: `${cfg.otel.endpoint}/v1/traces` }),
++  });
++  sdk.start();
++
++  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
++    rawBody: true,
++    logger: nivelesLog(cfg.logLevel),
++  });
++
++  app.disable('x-powered-by');
++  app.use(helmet());
++  app.use(middlewareCorrelacion);
++
++  const metricas = app.get(ServicioMetricas);
++  app.use(crearMiddlewareMetricas(metricas));
++  app.useGlobalFilters(new FiltroProblemas(metricas));
++
++  app.enableCors({
++    origin: [...cfg.corsOrigins],
++    methods: ['GET', 'POST', 'OPTIONS'],
++    allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'X-Correlation-ID', 'X-Signature', 'X-Timestamp'],
++    exposedHeaders: ['X-Correlation-ID', 'Retry-After', 'X-RateLimit-Remaining'],
++    maxAge: 600,
++  });
++
++  app.enableShutdownHooks();
++  process.once('SIGTERM', () => {
++    void sdk.shutdown();
++  });
++
++  await app.listen(cfg.port, '0.0.0.0');
++}
++
++arrancar().catch((error: unknown) => {
++  // eslint-disable-next-line no-console
++  console.error('Fallo crítico al iniciar core-nestjs:', error);
++  process.exit(1);
++});
+-- 
+2.55.0.windows.2
+

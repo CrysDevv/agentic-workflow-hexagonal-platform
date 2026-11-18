@@ -1,0 +1,235 @@
+From 45847fdc4071591370cdebd13576448c8193f2b7 Mon Sep 17 00:00:00 2001
+From: CrysDevv <cryssdev@gmail.com>
+Date: Tue, 17 Nov 2026 22:56:33 -0300
+Subject: [PATCH 5/9] =?UTF-8?q?feat(security):=20a=C3=B1adir=20JWT,=20X-AP?=
+ =?UTF-8?q?I-Key=20con=20SHA-256,=20rate=20limiting=20y=20webhooks=20HMAC-?=
+ =?UTF-8?q?SHA256=20anti-replay?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ .../src/infrastructure/security/security.ts   | 211 ++++++++++++++++++
+ 1 file changed, 211 insertions(+)
+ create mode 100644 services/core-nestjs/src/infrastructure/security/security.ts
+
+diff --git a/services/core-nestjs/src/infrastructure/security/security.ts b/services/core-nestjs/src/infrastructure/security/security.ts
+new file mode 100644
+index 0000000..d1927b6
+--- /dev/null
++++ b/services/core-nestjs/src/infrastructure/security/security.ts
+@@ -0,0 +1,211 @@
++import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
++import {
++  ForbiddenException,
++  HttpException,
++  HttpStatus,
++  Inject,
++  Injectable,
++  SetMetadata,
++  UnauthorizedException,
++  type CanActivate,
++  type ExecutionContext,
++} from '@nestjs/common';
++import { Reflector } from '@nestjs/core';
++import { JwtService } from '@nestjs/jwt';
++import type { Request, Response } from 'express';
++import { Redis } from 'ioredis';
++import type { AuditoriaPuerto } from '../../domain/ports';
++import { TOKENS, type AppConfig, type ClaveApiConfig, type RolApi } from '../../config/config';
++
++// ============================== Tipos compartidos ==============================
++export interface Principal {
++  readonly nombre: string;
++  readonly rol: RolApi;
++  readonly via: 'api-key' | 'jwt';
++}
++
++export interface SolicitudApp extends Request {
++  principal?: Principal;
++  correlationId?: string;
++  rawBody?: Buffer;
++}
++
++export const CLAVE_ROLES = 'agentic:roles';
++export const Roles = (...roles: RolApi[]) => SetMetadata(CLAVE_ROLES, roles);
++
++// ============================== Registro de API Keys (SHA-256) ==============================
++export class RegistroClavesApi {
++  private readonly entradas: ReadonlyArray<{ nombre: string; rol: RolApi; hash: Buffer }>;
++
++  constructor(claves: readonly ClaveApiConfig[]) {
++    this.entradas = claves.map((c) => ({
++      nombre: c.nombre,
++      rol: c.rol,
++      hash: createHash('sha256').update(c.clave, 'utf8').digest(),
++    }));
++  }
++
++  validar(presentada: string): Principal | null {
++    const hash = createHash('sha256').update(presentada, 'utf8').digest();
++    let coincidencia: Principal | null = null;
++    for (const entrada of this.entradas) {
++      // Se recorren todas las entradas para no filtrar información por tiempo de respuesta.
++      if (timingSafeEqual(hash, entrada.hash) && coincidencia === null) {
++        coincidencia = { nombre: entrada.nombre, rol: entrada.rol, via: 'api-key' };
++      }
++    }
++    return coincidencia;
++  }
++}
++
++// ============================== Guard de autenticación (JWT o X-API-Key) ==============================
++@Injectable()
++export class AutenticacionGuard implements CanActivate {
++  constructor(
++    @Inject(TOKENS.CLAVES) private readonly claves: RegistroClavesApi,
++    @Inject(TOKENS.AUDITORIA) private readonly auditoria: AuditoriaPuerto,
++    private readonly jwt: JwtService,
++    private readonly reflector: Reflector,
++  ) {}
++
++  async canActivate(contexto: ExecutionContext): Promise<boolean> {
++    const req = contexto.switchToHttp().getRequest<SolicitudApp>();
++    const apiKey = req.header('x-api-key');
++    const autorizacion = req.header('authorization');
++
++    let principal: Principal | null = null;
++    if (typeof apiKey === 'string' && apiKey.length > 0 && apiKey.length <= 256) {
++      principal = this.claves.validar(apiKey);
++    } else if (typeof autorizacion === 'string' && /^Bearer\s+\S+$/i.test(autorizacion)) {
++      principal = await this.verificarJwt(autorizacion.replace(/^Bearer\s+/i, ''));
++    }
++
++    if (principal === null) {
++      await this.auditar(req, 'AUTENTICACION_FALLIDA', null);
++      throw new UnauthorizedException('Credenciales ausentes o inválidas');
++    }
++
++    const requeridos = this.reflector.getAllAndOverride<RolApi[] | undefined>(CLAVE_ROLES, [
++      contexto.getHandler(),
++      contexto.getClass(),
++    ]);
++    if (requeridos !== undefined && requeridos.length > 0 && !requeridos.includes(principal.rol)) {
++      await this.auditar(req, 'ACCESO_DENEGADO', principal.nombre);
++      throw new ForbiddenException('El rol no tiene permiso para esta operación');
++    }
++
++    req.principal = principal;
++    return true;
++  }
++
++  private async verificarJwt(token: string): Promise<Principal | null> {
++    try {
++      const carga = await this.jwt.verifyAsync<{ sub?: unknown; rol?: unknown }>(token);
++      if (typeof carga.sub === 'string' && (carga.rol === 'ADMIN' || carga.rol === 'APROBADOR')) {
++        return { nombre: carga.sub, rol: carga.rol, via: 'jwt' };
++      }
++      return null;
++    } catch {
++      return null;
++    }
++  }
++
++  private auditar(req: SolicitudApp, tipo: string, actor: string | null): Promise<void> {
++    return this.auditoria.registrar({
++      tipoEvento: tipo,
++      severidad: 'WARN',
++      actor,
++      ipOrigen: req.ip ?? null,
++      correlationId: req.correlationId ?? null,
++      detalle: { metodo: req.method, ruta: req.path },
++    });
++  }
++}
++
++// ============================== Rate limiting (Redis, ventana fija) ==============================
++@Injectable()
++export class LimitadorTasaGuard implements CanActivate {
++  constructor(
++    @Inject(TOKENS.REDIS) private readonly redis: Redis,
++    @Inject(TOKENS.CONFIG) private readonly cfg: AppConfig,
++  ) {}
++
++  async canActivate(contexto: ExecutionContext): Promise<boolean> {
++    const http = contexto.switchToHttp();
++    const req = http.getRequest<SolicitudApp>();
++    const res = http.getResponse<Response>();
++
++    const ventana = this.cfg.rateLimit.windowSeconds;
++    const max = this.cfg.rateLimit.max;
++    const cubeta = Math.floor(Date.now() / (ventana * 1000));
++    const clave = `agentic:rl:${req.ip ?? 'desconocida'}:${cubeta}`;
++
++    const resultado = await this.redis.multi().incr(clave).expire(clave, ventana + 1).exec();
++    const primero = resultado === null ? undefined : resultado[0];
++    if (primero === undefined || primero[0] !== null) {
++      throw new Error('El limitador de tasa no está disponible');
++    }
++    const cuenta = Number(primero[1]);
++
++    res.setHeader('X-RateLimit-Limit', String(max));
++    res.setHeader('X-RateLimit-Remaining', String(Math.max(0, max - cuenta)));
++
++    if (cuenta > max) {
++      res.setHeader('Retry-After', String(ventana - (Math.floor(Date.now() / 1000) % ventana)));
++      throw new HttpException('Límite de solicitudes excedido', HttpStatus.TOO_MANY_REQUESTS);
++    }
++    return true;
++  }
++}
++
++// ============================== Webhooks firmados HMAC-SHA256 ==============================
++export type VeredictoWebhook = { valido: true } | { valido: false; motivo: string };
++
++export class VerificadorWebhook {
++  constructor(
++    private readonly secreto: string,
++    private readonly redis: Redis,
++    private readonly toleranciaSegundos: number = 300,
++  ) {}
++
++  /** Firma sobre `${timestamp}.${cuerpoCrudo}`; devuelve el digest hexadecimal. */
++  static calcular(secreto: string, timestamp: string, cuerpo: Buffer): string {
++    return createHmac('sha256', secreto).update(`${timestamp}.`).update(cuerpo).digest('hex');
++  }
++
++  generarFirma(timestamp: string, cuerpo: Buffer): string {
++    return `sha256=${VerificadorWebhook.calcular(this.secreto, timestamp, cuerpo)}`;
++  }
++
++  async verificar(
++    cuerpo: Buffer,
++    firmaCabecera: string | undefined,
++    timestampCabecera: string | undefined,
++  ): Promise<VeredictoWebhook> {
++    if (firmaCabecera === undefined || timestampCabecera === undefined) {
++      return { valido: false, motivo: 'Faltan las cabeceras X-Signature o X-Timestamp' };
++    }
++    if (!/^\d{10}$/.test(timestampCabecera)) {
++      return { valido: false, motivo: 'X-Timestamp debe estar en segundos Unix' };
++    }
++    const desfase = Math.abs(Math.floor(Date.now() / 1000) - Number(timestampCabecera));
++    if (desfase > this.toleranciaSegundos) {
++      return { valido: false, motivo: 'Marca de tiempo fuera de la ventana permitida' };
++    }
++    const coincidencia = /^sha256=([a-f0-9]{64})$/.exec(firmaCabecera);
++    if (coincidencia === null) {
++      return { valido: false, motivo: 'Formato de firma inválido' };
++    }
++    const hex = coincidencia[1] as string;
++    const esperada = Buffer.from(VerificadorWebhook.calcular(this.secreto, timestampCabecera, cuerpo), 'hex');
++    const recibida = Buffer.from(hex, 'hex');
++    if (esperada.length !== recibida.length || !timingSafeEqual(esperada, recibida)) {
++      return { valido: false, motivo: 'Firma no coincide' };
++    }
++    const nueva = await this.redis.set(`agentic:wh:${hex}`, '1', 'EX', this.toleranciaSegundos * 2, 'NX');
++    if (nueva !== 'OK') {
++      return { valido: false, motivo: 'Solicitud repetida (replay) detectada' };
++    }
++    return { valido: true };
++  }
++}
+-- 
+2.55.0.windows.2
+
