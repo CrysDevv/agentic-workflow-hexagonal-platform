@@ -1,0 +1,37 @@
+From 19088c8a963f106ba2ad10a52f86d74e95c85f93 Mon Sep 17 00:00:00 2001
+From: CrysDevv <cryssdev@gmail.com>
+Date: Tue, 17 Nov 2026 22:56:34 -0300
+Subject: [PATCH 9/9] build: propagar API_KEYS al contenedor core-nestjs y
+ documentar variable en .env.example
+
+---
+ .env.example       | 3 +++
+ docker-compose.yml | 1 +
+ 2 files changed, 4 insertions(+)
+
+diff --git a/.env.example b/.env.example
+index 2724d21..fe622d6 100644
+--- a/.env.example
++++ b/.env.example
+@@ -42,3 +42,6 @@ OTEL_SERVICE_NAME=core-nestjs
+ 
+ # ===== Frontend =====
+ VITE_API_BASE_URL=http://localhost:3000
++
++# ===== Autenticación por API Key (formato nombre:ROL:clave separados por coma; ROL = ADMIN | APROBADOR) =====
++API_KEYS=admin:ADMIN:cambiar_api_key_admin_minimo_32_caracteres,aprobador:APROBADOR:cambiar_api_key_aprobador_minimo_32_caracteres
+diff --git a/docker-compose.yml b/docker-compose.yml
+index ae19be6..60e7b56 100644
+--- a/docker-compose.yml
++++ b/docker-compose.yml
+@@ -117,6 +117,7 @@ services:
+       JWT_SECRET: ${JWT_SECRET}
+       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-15m}
+       WEBHOOK_HMAC_SECRET: ${WEBHOOK_HMAC_SECRET}
++      API_KEYS: "${API_KEYS:?defina API_KEYS en .env}"
+       RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-60}
+       RATE_LIMIT_WINDOW_SECONDS: ${RATE_LIMIT_WINDOW_SECONDS:-60}
+       LLM_PROVIDER: ${LLM_PROVIDER:-local-deterministic}
+-- 
+2.55.0.windows.2
+
