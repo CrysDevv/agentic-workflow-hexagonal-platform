@@ -1,0 +1,91 @@
+From 11a6a8996d28f6f7326be0e10d3bb68b27fb3491 Mon Sep 17 00:00:00 2001
+From: CrysDevv <cryssdev@gmail.com>
+Date: Thu, 19 Nov 2026 13:50:07 -0300
+Subject: [PATCH 3/5] =?UTF-8?q?feat(frontend):=20a=C3=B1adir=20punto=20de?=
+ =?UTF-8?q?=20entrada=20React=2018=20y=20estilos=20base=20de=20la=20consol?=
+ =?UTF-8?q?a?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ frontend-react/index.html    | 14 ++++++++++++++
+ frontend-react/src/index.css | 11 +++++++++++
+ frontend-react/src/main.tsx  | 26 ++++++++++++++++++++++++++
+ 3 files changed, 51 insertions(+)
+ create mode 100644 frontend-react/index.html
+ create mode 100644 frontend-react/src/index.css
+ create mode 100644 frontend-react/src/main.tsx
+
+diff --git a/frontend-react/index.html b/frontend-react/index.html
+new file mode 100644
+index 0000000..b2cba42
+--- /dev/null
++++ b/frontend-react/index.html
+@@ -0,0 +1,14 @@
++<!doctype html>
++<html lang="es">
++  <head>
++    <meta charset="UTF-8" />
++    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
++    <meta name="referrer" content="no-referrer" />
++    <title>Consola de Agentes | Human-in-the-Loop</title>
++    <script src="/config.js"></script>
++  </head>
++  <body>
++    <div id="raiz"></div>
++    <script type="module" src="/src/main.tsx"></script>
++  </body>
++</html>
+diff --git a/frontend-react/src/index.css b/frontend-react/src/index.css
+new file mode 100644
+index 0000000..7d53779
+--- /dev/null
++++ b/frontend-react/src/index.css
+@@ -0,0 +1,11 @@
++@tailwind base;
++@tailwind components;
++@tailwind utilities;
++
++:root {
++  color-scheme: dark;
++}
++
++body {
++  @apply bg-slate-950 text-slate-100 antialiased;
++}
+diff --git a/frontend-react/src/main.tsx b/frontend-react/src/main.tsx
+new file mode 100644
+index 0000000..7d65c25
+--- /dev/null
++++ b/frontend-react/src/main.tsx
+@@ -0,0 +1,26 @@
++import { StrictMode } from 'react';
++import { createRoot } from 'react-dom/client';
++import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
++import App from './App';
++import './index.css';
++
++// El backend limita a 60 solicitudes/min por IP: se evitan reconsultas innecesarias.
++const cliente = new QueryClient({
++  defaultOptions: {
++    queries: { retry: false, refetchOnWindowFocus: false, staleTime: 2_000 },
++    mutations: { retry: false },
++  },
++});
++
++const raiz = document.getElementById('raiz');
++if (raiz === null) {
++  throw new Error('No se encontró el elemento #raiz');
++}
++
++createRoot(raiz).render(
++  <StrictMode>
++    <QueryClientProvider client={cliente}>
++      <App />
++    </QueryClientProvider>
++  </StrictMode>,
++);
+-- 
+2.55.0.windows.2
+
