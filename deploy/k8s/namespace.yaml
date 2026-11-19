@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agentic-platform
+  labels:
+    app.kubernetes.io/part-of: agentic-workflow-hexagonal-platform
+    # LocalStack (solo desarrollo) corre como root: se exige "baseline" y se audita "restricted".
+    # Con AWS real (QUEUE_DRIVER=sqs) puede eliminarse LocalStack y subir enforce a "restricted".
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

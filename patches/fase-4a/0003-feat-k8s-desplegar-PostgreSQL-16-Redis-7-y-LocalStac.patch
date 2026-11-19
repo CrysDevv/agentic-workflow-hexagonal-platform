@@ -1,0 +1,512 @@
+From 1ab69a5d4ce3b9dc64aa8afd9ae20d550c3ef628 Mon Sep 17 00:00:00 2001
+From: CrysDevv <cryssdev@gmail.com>
+Date: Thu, 19 Nov 2026 18:42:38 -0300
+Subject: [PATCH 3/7] feat(k8s): desplegar PostgreSQL 16, Redis 7 y LocalStack
+ endurecidos con almacenamiento persistente
+
+---
+ deploy/k8s/data-stores.yaml  | 330 +++++++++++++++++++++++++++++++++++
+ deploy/k8s/postgres-init.sql | 154 ++++++++++++++++
+ 2 files changed, 484 insertions(+)
+ create mode 100644 deploy/k8s/data-stores.yaml
+ create mode 100644 deploy/k8s/postgres-init.sql
+
+diff --git a/deploy/k8s/data-stores.yaml b/deploy/k8s/data-stores.yaml
+new file mode 100644
+index 0000000..e054dc0
+--- /dev/null
++++ b/deploy/k8s/data-stores.yaml
+@@ -0,0 +1,330 @@
++apiVersion: v1
++kind: ConfigMap
++metadata:
++  name: localstack-init
++  labels:
++    app.kubernetes.io/part-of: agentic-workflow-hexagonal-platform
++data:
++  init-aws.sh: |
++    #!/usr/bin/env bash
++    set -euo pipefail
++    REGION="${AWS_DEFAULT_REGION:-us-east-2}"
++    BUCKET="${S3_BUCKET:-agentic-artifacts}"
++    QUEUE="${SQS_QUEUE_NAME:-agentic-tasks}"
++    DLQ="${SQS_DLQ_NAME:-agentic-tasks-dlq}"
++    awslocal s3api create-bucket --bucket "${BUCKET}" --region "${REGION}" \
++      --create-bucket-configuration "LocationConstraint=${REGION}" >/dev/null 2>&1 || true
++    awslocal s3api put-bucket-versioning --bucket "${BUCKET}" --versioning-configuration Status=Enabled
++    awslocal sqs create-queue --queue-name "${DLQ}" --region "${REGION}" >/dev/null
++    DLQ_URL="$(awslocal sqs get-queue-url --queue-name "${DLQ}" --region "${REGION}" --query QueueUrl --output text)"
++    DLQ_ARN="$(awslocal sqs get-queue-attributes --queue-url "${DLQ_URL}" --attribute-names QueueArn --region "${REGION}" --query Attributes.QueueArn --output text)"
++    awslocal sqs create-queue --queue-name "${QUEUE}" --region "${REGION}" \
++      --attributes "{\"VisibilityTimeout\":\"60\",\"RedrivePolicy\":\"{\\\"deadLetterTargetArn\\\":\\\"${DLQ_ARN}\\\",\\\"maxReceiveCount\\\":\\\"5\\\"}\"}" >/dev/null
++    echo "[init-aws] Recursos listos"
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: postgres
++  labels:
++    app.kubernetes.io/name: postgres
++    app.kubernetes.io/component: database
++    app.kubernetes.io/part-of: agentic-workflow-hexagonal-platform
++spec:
++  selector:
++    app.kubernetes.io/name: postgres
++  ports:
++    - name: postgres
++      port: 5432
++      targetPort: postgres
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: postgres
++  labels:
++    app.kubernetes.io/name: postgres
++    app.kubernetes.io/component: database
++    app.kubernetes.io/part-of: agentic-workflow-hexagonal-platform
++spec:
++  serviceName: postgres
++  replicas: 1
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: postgres
++  template:
++    metadata:
++      labels:
++        app.kubernetes.io/name: postgres
++        app.kubernetes.io/component: database
++        app.kubernetes.io/part-of: agentic-workflow-hexagonal-platform
++    spec:
++      automountServiceAccountToken: false
++      terminationGracePeriodSeconds: 60
++      securityContext:
++        runAsNonRoot: true
++        runAsUser: 70
++        runAsGroup: 70
++        fsGroup: 70
++        seccompProfile:
++          type: RuntimeDefault
++      containers:
++        - name: postgres
++          image: postgres:16-alpine
++          imagePullPolicy: IfNotPresent
++          ports:
++            - name: postgres
++              containerPort: 5432
++          env:
++            - name: POSTGRES_DB
++              valueFrom:
++                secretKeyRef: { name: agentic-secrets, key: POSTGRES_DB }
++            - name: POSTGRES_USER
++              valueFrom:
++                secretKeyRef: { name: agentic-secrets, key: POSTGRES_USER }
++            - name: POSTGRES_PASSWORD
++              valueFrom:
++                secretKeyRef: { name: agentic-secrets, key: POSTGRES_PASSWORD }
++            - name: PGDATA
++              value: /var/lib/postgresql/data/pgdata
++          securityContext:
++            allowPrivilegeEscalation: false
++            readOnlyRootFilesystem: true
++            capabilities:
++              drop: ["ALL"]
++          readinessProbe:
++            exec:
++              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
++            initialDelaySeconds: 5
++            periodSeconds: 5
++            timeoutSeconds: 5
++            failureThreshold: 12
++          livenessProbe:
++            exec:
++              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
++            initialDelaySeconds: 30
++            periodSeconds: 10
++            timeoutSeconds: 5
++            failureThreshold: 6
++          resources:
++            requests: { cpu: 100m, memory: 256Mi }
++            limits: { cpu: "1", memory: 1Gi }
++          volumeMounts:
++            - { name: data, mountPath: /var/lib/postgresql/data }
++            - { name: init, mountPath: /docker-entrypoint-initdb.d, readOnly: true }
++            - { name: tmp, mountPath: /tmp }
++            - { name: run, mountPath: /var/run/postgresql }
++      volumes:
++        - name: init
++          configMap:
++            name: postgres-init
++        - name: tmp
++          emptyDir: { sizeLimit: 128Mi }
++        - name: run
++          emptyDir: { sizeLimit: 16Mi }
++  volumeClaimTemplates:
++    - metadata:
++        name: data
++      spec:
++        accessModes: ["ReadWriteOnce"]
++        resources:
++          requests:
++            storage: 5Gi
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: redis
++  labels:
++    app.kubernetes.io/name: redis
++    app.kubernetes.io/component: queue-cache
++    app.kubernetes.io/part-of: agentic-workflow-hexagonal-platform
++spec:
++  selector:
++    app.kubernetes.io/name: redis
++  ports:
++    - name: redis
++      port: 6379
++      targetPort: redis
++---
++apiVersion: apps/v1
++kind: StatefulSet
++metadata:
++  name: redis
++  labels:
++    app.kubernetes.io/name: redis
++    app.kubernetes.io/component: queue-cache
++    app.kubernetes.io/part-of: agentic-workflow-hexagonal-platform
++spec:
++  serviceName: redis
++  replicas: 1
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: redis
++  template:
++    metadata:
++      labels:
++        app.kubernetes.io/name: redis
++        app.kubernetes.io/component: queue-cache
++        app.kubernetes.io/part-of: agentic-workflow-hexagonal-platform
++    spec:
++      automountServiceAccountToken: false
++      securityContext:
++        runAsNonRoot: true
++        runAsUser: 999
++        runAsGroup: 999
++        fsGroup: 999
++        seccompProfile:
++          type: RuntimeDefault
++      containers:
++        - name: redis
++          image: redis:7-alpine
++          imagePullPolicy: IfNotPresent
++          command:
++            - sh
++            - -c
++            - exec redis-server --requirepass "$REDIS_PASSWORD" --appendonly yes --save 60 1 --dir /data
++          ports:
++            - name: redis
++              containerPort: 6379
++          env:
++            - name: REDIS_PASSWORD
++              valueFrom:
++                secretKeyRef: { name: agentic-secrets, key: REDIS_PASSWORD }
++          securityContext:
++            allowPrivilegeEscalation: false
++            readOnlyRootFilesystem: true
++            capabilities:
++              drop: ["ALL"]
++          readinessProbe:
++            exec:
++              command: ["sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
++            initialDelaySeconds: 3
++            periodSeconds: 5
++            timeoutSeconds: 3
++          livenessProbe:
++            exec:
++              command: ["sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
++            initialDelaySeconds: 15
++            periodSeconds: 10
++            timeoutSeconds: 3
++            failureThreshold: 5
++          resources:
++            requests: { cpu: 50m, memory: 64Mi }
++            limits: { cpu: 500m, memory: 256Mi }
++          volumeMounts:
++            - { name: data, mountPath: /data }
++  volumeClaimTemplates:
++    - metadata:
++        name: data
++      spec:
++        accessModes: ["ReadWriteOnce"]
++        resources:
++          requests:
++            storage: 1Gi
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: localstack
++  labels:
++    app.kubernetes.io/name: localstack
++    app.kubernetes.io/component: aws-emulator
++    app.kubernetes.io/part-of: agentic-workflow-hexagonal-platform
++spec:
++  selector:
++    app.kubernetes.io/name: localstack
++  ports:
++    - name: edge
++      port: 4566
++      targetPort: edge
++---
++# Solo desarrollo/demostración (costo $0). En producción se usa AWS S3/SQS real y este Deployment se elimina.
++apiVersion: apps/v1
++kind: Deployment
++metadata:
++  name: localstack
++  labels:
++    app.kubernetes.io/name: localstack
++    app.kubernetes.io/component: aws-emulator
++    app.kubernetes.io/part-of: agentic-workflow-hexagonal-platform
++spec:
++  replicas: 1
++  strategy:
++    type: Recreate
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: localstack
++  template:
++    metadata:
++      labels:
++        app.kubernetes.io/name: localstack
++        app.kubernetes.io/component: aws-emulator
++        app.kubernetes.io/part-of: agentic-workflow-hexagonal-platform
++    spec:
++      automountServiceAccountToken: false
++      securityContext:
++        seccompProfile:
++          type: RuntimeDefault
++      containers:
++        - name: localstack
++          image: localstack/localstack:3.8.1
++          imagePullPolicy: IfNotPresent
++          ports:
++            - name: edge
++              containerPort: 4566
++          env:
++            - { name: SERVICES, value: "s3,sqs" }
++            - { name: DEBUG, value: "0" }
++            - name: DEFAULT_REGION
++              valueFrom:
++                configMapKeyRef: { name: agentic-config, key: AWS_REGION }
++            - name: AWS_DEFAULT_REGION
++              valueFrom:
++                configMapKeyRef: { name: agentic-config, key: AWS_REGION }
++            - name: S3_BUCKET
++              valueFrom:
++                configMapKeyRef: { name: agentic-config, key: S3_BUCKET }
++            - name: SQS_QUEUE_NAME
++              valueFrom:
++                configMapKeyRef: { name: agentic-config, key: SQS_QUEUE_NAME }
++            - name: SQS_DLQ_NAME
++              valueFrom:
++                configMapKeyRef: { name: agentic-config, key: SQS_DLQ_NAME }
++          securityContext:
++            allowPrivilegeEscalation: false
++          readinessProbe:
++            httpGet:
++              path: /_localstack/health
++              port: edge
++            initialDelaySeconds: 10
++            periodSeconds: 5
++            timeoutSeconds: 5
++            failureThreshold: 30
++          livenessProbe:
++            httpGet:
++              path: /_localstack/health
++              port: edge
++            initialDelaySeconds: 60
++            periodSeconds: 15
++            timeoutSeconds: 5
++            failureThreshold: 6
++          resources:
++            requests: { cpu: 100m, memory: 256Mi }
++            limits: { cpu: "1", memory: 1Gi }
++          volumeMounts:
++            - name: init
++              mountPath: /etc/localstack/init/ready.d/init-aws.sh
++              subPath: init-aws.sh
++              readOnly: true
++            - { name: data, mountPath: /var/lib/localstack }
++            - { name: tmp, mountPath: /tmp/localstack }
++      volumes:
++        - name: init
++          configMap:
++            name: localstack-init
++            defaultMode: 493
++        - name: data
++          emptyDir: { sizeLimit: 512Mi }
++        - name: tmp
++          emptyDir: { sizeLimit: 512Mi }
+diff --git a/deploy/k8s/postgres-init.sql b/deploy/k8s/postgres-init.sql
+new file mode 100644
+index 0000000..7990e13
+--- /dev/null
++++ b/deploy/k8s/postgres-init.sql
+@@ -0,0 +1,154 @@
++-- Esquema inicial: agentic-workflow-hexagonal-platform
++-- PostgreSQL 16
++
++CREATE EXTENSION IF NOT EXISTS pgcrypto;
++
++-- ---------------------------------------------------------------
++-- flujos_definicion
++-- ---------------------------------------------------------------
++CREATE TABLE IF NOT EXISTS flujos_definicion (
++    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
++    nombre                  VARCHAR(120) NOT NULL UNIQUE,
++    descripcion             TEXT NOT NULL,
++    version                 INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
++    herramientas_permitidas TEXT[] NOT NULL,
++    umbral_aprobacion_usd   NUMERIC(14,2) NOT NULL DEFAULT 5000.00 CHECK (umbral_aprobacion_usd >= 0),
++    activo                  BOOLEAN NOT NULL DEFAULT TRUE,
++    creado_en               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
++    actualizado_en          TIMESTAMPTZ NOT NULL DEFAULT NOW()
++);
++
++-- ---------------------------------------------------------------
++-- ejecuciones_agente
++-- ---------------------------------------------------------------
++CREATE TABLE IF NOT EXISTS ejecuciones_agente (
++    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
++    flujo_id        UUID NOT NULL REFERENCES flujos_definicion(id) ON DELETE RESTRICT,
++    estado          VARCHAR(32) NOT NULL DEFAULT 'PENDIENTE'
++                    CHECK (estado IN ('PENDIENTE','EN_EJECUCION','PAUSADA_APROBACION','COMPLETADA','RECHAZADA','FALLIDA')),
++    origen          VARCHAR(32) NOT NULL DEFAULT 'API'
++                    CHECK (origen IN ('API','WEBHOOK','CONSOLA')),
++    entrada         JSONB NOT NULL DEFAULT '{}'::jsonb,
++    resultado       JSONB,
++    error           TEXT,
++    correlation_id  VARCHAR(64) NOT NULL,
++    iniciado_en     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
++    finalizado_en   TIMESTAMPTZ,
++    actualizado_en  TIMESTAMPTZ NOT NULL DEFAULT NOW()
++);
++CREATE INDEX IF NOT EXISTS idx_ejecuciones_estado ON ejecuciones_agente (estado);
++CREATE INDEX IF NOT EXISTS idx_ejecuciones_flujo ON ejecuciones_agente (flujo_id);
++CREATE INDEX IF NOT EXISTS idx_ejecuciones_correlation ON ejecuciones_agente (correlation_id);
++
++-- ---------------------------------------------------------------
++-- pasos_ejecucion
++-- ---------------------------------------------------------------
++CREATE TABLE IF NOT EXISTS pasos_ejecucion (
++    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
++    ejecucion_id  UUID NOT NULL REFERENCES ejecuciones_agente(id) ON DELETE CASCADE,
++    orden         INTEGER NOT NULL CHECK (orden > 0),
++    herramienta   VARCHAR(80) NOT NULL,
++    razonamiento  TEXT,
++    entrada       JSONB NOT NULL DEFAULT '{}'::jsonb,
++    salida        JSONB,
++    estado        VARCHAR(32) NOT NULL DEFAULT 'PENDIENTE'
++                  CHECK (estado IN ('PENDIENTE','EN_EJECUCION','COMPLETADO','BLOQUEADO','FALLIDO')),
++    error         TEXT,
++    duracion_ms   INTEGER CHECK (duracion_ms IS NULL OR duracion_ms >= 0),
++    creado_en     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
++    UNIQUE (ejecucion_id, orden)
++);
++CREATE INDEX IF NOT EXISTS idx_pasos_ejecucion ON pasos_ejecucion (ejecucion_id);
++
++-- ---------------------------------------------------------------
++-- aprobaciones_humanas
++-- ---------------------------------------------------------------
++CREATE TABLE IF NOT EXISTS aprobaciones_humanas (
++    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
++    ejecucion_id     UUID NOT NULL REFERENCES ejecuciones_agente(id) ON DELETE CASCADE,
++    paso_id          UUID REFERENCES pasos_ejecucion(id) ON DELETE SET NULL,
++    accion_propuesta JSONB NOT NULL,
++    motivo           TEXT NOT NULL,
++    monto_usd        NUMERIC(14,2) CHECK (monto_usd IS NULL OR monto_usd >= 0),
++    estado           VARCHAR(16) NOT NULL DEFAULT 'PENDIENTE'
++                     CHECK (estado IN ('PENDIENTE','APROBADA','RECHAZADA','EXPIRADA')),
++    solicitado_en    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
++    resuelto_en      TIMESTAMPTZ,
++    resuelto_por     VARCHAR(120),
++    comentario       TEXT,
++    CHECK ((estado = 'PENDIENTE' AND resuelto_en IS NULL) OR (estado <> 'PENDIENTE'))
++);
++CREATE INDEX IF NOT EXISTS idx_aprobaciones_estado ON aprobaciones_humanas (estado);
++CREATE INDEX IF NOT EXISTS idx_aprobaciones_ejecucion ON aprobaciones_humanas (ejecucion_id);
++
++-- ---------------------------------------------------------------
++-- auditoria_seguridad (append-only)
++-- ---------------------------------------------------------------
++CREATE TABLE IF NOT EXISTS auditoria_seguridad (
++    id              BIGSERIAL PRIMARY KEY,
++    tipo_evento     VARCHAR(64) NOT NULL,
++    severidad       VARCHAR(16) NOT NULL DEFAULT 'INFO'
++                    CHECK (severidad IN ('INFO','WARN','ALTA','CRITICA')),
++    actor           VARCHAR(120),
++    ip_origen       INET,
++    correlation_id  VARCHAR(64),
++    detalle         JSONB NOT NULL DEFAULT '{}'::jsonb,
++    creado_en       TIMESTAMPTZ NOT NULL DEFAULT NOW()
++);
++CREATE INDEX IF NOT EXISTS idx_auditoria_tipo ON auditoria_seguridad (tipo_evento);
++CREATE INDEX IF NOT EXISTS idx_auditoria_creado ON auditoria_seguridad (creado_en DESC);
++
++CREATE OR REPLACE FUNCTION fn_auditoria_inmutable() RETURNS trigger AS $$
++BEGIN
++    RAISE EXCEPTION 'auditoria_seguridad es de solo anexado (append-only)';
++END;
++$$ LANGUAGE plpgsql;
++
++DROP TRIGGER IF EXISTS trg_auditoria_inmutable ON auditoria_seguridad;
++CREATE TRIGGER trg_auditoria_inmutable
++    BEFORE UPDATE OR DELETE ON auditoria_seguridad
++    FOR EACH ROW EXECUTE FUNCTION fn_auditoria_inmutable();
++
++-- ---------------------------------------------------------------
++-- catalogo_proveedores
++-- ---------------------------------------------------------------
++CREATE TABLE IF NOT EXISTS catalogo_proveedores (
++    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
++    nombre              VARCHAR(120) NOT NULL,
++    categoria           VARCHAR(60) NOT NULL,
++    sku                 VARCHAR(40) NOT NULL UNIQUE,
++    descripcion         TEXT NOT NULL,
++    precio_unitario_usd NUMERIC(12,2) NOT NULL CHECK (precio_unitario_usd >= 0),
++    plazo_entrega_dias  INTEGER NOT NULL CHECK (plazo_entrega_dias >= 0),
++    calificacion        NUMERIC(2,1) NOT NULL CHECK (calificacion BETWEEN 0 AND 5),
++    pais                VARCHAR(2) NOT NULL,
++    activo              BOOLEAN NOT NULL DEFAULT TRUE
++);
++CREATE INDEX IF NOT EXISTS idx_proveedores_categoria ON catalogo_proveedores (categoria) WHERE activo;
++
++-- ---------------------------------------------------------------
++-- Datos semilla
++-- ---------------------------------------------------------------
++INSERT INTO flujos_definicion (nombre, descripcion, herramientas_permitidas, umbral_aprobacion_usd) VALUES
++ ('cotizacion-comercial',
++  'Consulta proveedores, valida presupuesto y emite una propuesta comercial.',
++  ARRAY['consultar_proveedores','consultar_catalogo','validar_umbral_presupuestario','emitir_propuesta_comercial','notificar'],
++  5000.00),
++ ('compra-administrativa',
++  'Gestiona solicitudes de compra internas con validación presupuestaria y notificación.',
++  ARRAY['consultar_catalogo','validar_umbral_presupuestario','notificar'],
++  2500.00)
++ON CONFLICT (nombre) DO NOTHING;
++
++INSERT INTO catalogo_proveedores (nombre, categoria, sku, descripcion, precio_unitario_usd, plazo_entrega_dias, calificacion, pais) VALUES
++ ('TecnoSur SpA',        'hardware',    'HW-LAP-001', 'Laptop empresarial 14" 16GB RAM',        1150.00,  5, 4.6, 'CL'),
++ ('TecnoSur SpA',        'hardware',    'HW-MON-002', 'Monitor 27" IPS 4K',                      420.00,  4, 4.6, 'CL'),
++ ('Andes Cloud Partners','software',    'SW-LIC-010', 'Licencia anual suite colaborativa/usuario',  96.00,  1, 4.4, 'CL'),
++ ('Andes Cloud Partners','software',    'SW-SEC-011', 'Licencia anual EDR/usuario',                 54.00,  1, 4.4, 'CL'),
++ ('Pacific Office Supply','oficina',    'OF-SIL-020', 'Silla ergonómica de oficina',               230.00,  7, 4.1, 'US'),
++ ('Pacific Office Supply','oficina',    'OF-ESC-021', 'Escritorio ajustable eléctrico',            480.00,  9, 4.1, 'US'),
++ ('LogiExpress Ltda',    'logistica',  'LG-ENV-030', 'Envío nacional por pallet',                 180.00,  3, 4.2, 'CL'),
++ ('ConsultaPro Group',   'servicios',  'SV-CON-040', 'Consultoría técnica (hora)',                 85.00,  2, 4.8, 'AR'),
++ ('ConsultaPro Group',   'servicios',  'SV-AUD-041', 'Auditoría de seguridad aplicativa',        6500.00, 15, 4.8, 'AR'),
++ ('Nube Austral SA',     'infraestructura','IN-SRV-050','Servidor rack 2U 64GB RAM',              4200.00, 12, 4.3, 'CL')
++ON CONFLICT (sku) DO NOTHING;
+-- 
+2.55.0.windows.2
+

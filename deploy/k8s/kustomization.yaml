@@ -1,0 +1,26 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: agentic-platform
+
+resources:
+  - namespace.yaml
+  - config.yaml
+  - data-stores.yaml
+  - core-nestjs.yaml
+  - frontend-react.yaml
+  - network-policies.yaml
+
+configMapGenerator:
+  - name: postgres-init
+    files:
+      - init.sql=postgres-init.sql
+    options:
+      disableNameSuffixHash: true
+
+# Imágenes locales (docker build + kind/k3s). Para un registro propio, cambie newName/newTag.
+images:
+  - name: agentic/core-nestjs
+    newTag: local
+  - name: agentic/frontend-react
+    newTag: local

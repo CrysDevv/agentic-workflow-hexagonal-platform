@@ -1,0 +1,68 @@
+From f4030c12567c612443a011904cf9c10bc890f1be Mon Sep 17 00:00:00 2001
+From: CrysDevv <cryssdev@gmail.com>
+Date: Thu, 19 Nov 2026 18:42:38 -0300
+Subject: [PATCH 1/7] =?UTF-8?q?build(k8s):=20a=C3=B1adir=20namespace=20con?=
+ =?UTF-8?q?=20Pod=20Security=20Standards=20y=20Kustomization?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ deploy/k8s/kustomization.yaml | 26 ++++++++++++++++++++++++++
+ deploy/k8s/namespace.yaml     | 11 +++++++++++
+ 2 files changed, 37 insertions(+)
+ create mode 100644 deploy/k8s/kustomization.yaml
+ create mode 100644 deploy/k8s/namespace.yaml
+
+diff --git a/deploy/k8s/kustomization.yaml b/deploy/k8s/kustomization.yaml
+new file mode 100644
+index 0000000..9b7dbaa
+--- /dev/null
++++ b/deploy/k8s/kustomization.yaml
+@@ -0,0 +1,26 @@
++apiVersion: kustomize.config.k8s.io/v1beta1
++kind: Kustomization
++
++namespace: agentic-platform
++
++resources:
++  - namespace.yaml
++  - config.yaml
++  - data-stores.yaml
++  - core-nestjs.yaml
++  - frontend-react.yaml
++  - network-policies.yaml
++
++configMapGenerator:
++  - name: postgres-init
++    files:
++      - init.sql=postgres-init.sql
++    options:
++      disableNameSuffixHash: true
++
++# Imágenes locales (docker build + kind/k3s). Para un registro propio, cambie newName/newTag.
++images:
++  - name: agentic/core-nestjs
++    newTag: local
++  - name: agentic/frontend-react
++    newTag: local
+diff --git a/deploy/k8s/namespace.yaml b/deploy/k8s/namespace.yaml
+new file mode 100644
+index 0000000..32a9cfb
+--- /dev/null
++++ b/deploy/k8s/namespace.yaml
+@@ -0,0 +1,11 @@
++apiVersion: v1
++kind: Namespace
++metadata:
++  name: agentic-platform
++  labels:
++    app.kubernetes.io/part-of: agentic-workflow-hexagonal-platform
++    # LocalStack (solo desarrollo) corre como root: se exige "baseline" y se audita "restricted".
++    # Con AWS real (QUEUE_DRIVER=sqs) puede eliminarse LocalStack y subir enforce a "restricted".
++    pod-security.kubernetes.io/enforce: baseline
++    pod-security.kubernetes.io/audit: restricted
++    pod-security.kubernetes.io/warn: restricted
+-- 
+2.55.0.windows.2
+
