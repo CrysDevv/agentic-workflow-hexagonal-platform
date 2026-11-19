@@ -1,0 +1,118 @@
+From a68fd511c24127493ea13531bbef10c51350fd65 Mon Sep 17 00:00:00 2001
+From: CrysDevv <cryssdev@gmail.com>
+Date: Thu, 19 Nov 2026 18:32:13 -0300
+Subject: [PATCH 2/4] =?UTF-8?q?test:=20a=C3=B1adir=20f=C3=A1brica=20de=20l?=
+ =?UTF-8?q?a=20aplicaci=C3=B3n=20HTTP=20real=20con=20puertos=20en=20memori?=
+ =?UTF-8?q?a?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ .../core-nestjs/src/testing/app-factory.ts    | 94 +++++++++++++++++++
+ 1 file changed, 94 insertions(+)
+ create mode 100644 services/core-nestjs/src/testing/app-factory.ts
+
+diff --git a/services/core-nestjs/src/testing/app-factory.ts b/services/core-nestjs/src/testing/app-factory.ts
+new file mode 100644
+index 0000000..346b421
+--- /dev/null
++++ b/services/core-nestjs/src/testing/app-factory.ts
+@@ -0,0 +1,94 @@
++// Fábrica de la aplicación HTTP real (controladores, guards, filtro RFC 7807) con puertos en memoria.
++import 'reflect-metadata';
++import { JwtService } from '@nestjs/jwt';
++import type { NestExpressApplication } from '@nestjs/platform-express';
++import { Test } from '@nestjs/testing';
++import type { Redis } from 'ioredis';
++import { ConsultasCasoUso, IniciarEjecucionCasoUso, ResolverAprobacionCasoUso } from '../application/use-cases';
++import { TOKENS, cargarConfig } from '../config/config';
++import type { LlmPuerto } from '../domain/ports';
++import {
++  AprobacionesControlador,
++  AuthControlador,
++  EjecucionesControlador,
++  MetricasControlador,
++  SaludControlador,
++  WebhooksControlador,
++} from '../infrastructure/http/controllers';
++import {
++  FiltroProblemas,
++  ServicioMetricas,
++  crearMiddlewareMetricas,
++  middlewareCorrelacion,
++} from '../infrastructure/http/http-support';
++import { RegistroClavesApi, VerificadorWebhook } from '../infrastructure/security/security';
++import { PoolFalso, RedisFalso, crearEntorno, type Entorno } from './fakes';
++
++export const CLAVES_PRUEBA = {
++  admin: 'clave-admin-de-pruebas-0123456789',
++  aprobador: 'clave-aprobador-de-pruebas-0123456789',
++} as const;
++
++export const SECRETO_WEBHOOK = 'w'.repeat(40);
++
++export interface AppPrueba {
++  readonly app: NestExpressApplication;
++  readonly env: Entorno;
++  readonly redis: RedisFalso;
++  readonly pool: PoolFalso;
++  readonly metricas: ServicioMetricas;
++}
++
++export async function construirApp(opciones: { llm?: LlmPuerto; rateLimitMax?: number } = {}): Promise<AppPrueba> {
++  const env = crearEntorno({ llm: opciones.llm });
++  const cfg = cargarConfig({
++    JWT_SECRET: 'j'.repeat(40),
++    WEBHOOK_HMAC_SECRET: SECRETO_WEBHOOK,
++    DATABASE_URL: 'postgresql://u:p@localhost:5432/db',
++    REDIS_URL: 'redis://localhost:6379',
++    AWS_ACCESS_KEY_ID: 'test',
++    AWS_SECRET_ACCESS_KEY: 'test',
++    S3_BUCKET: 'bucket',
++    API_KEYS: `admin:ADMIN:${CLAVES_PRUEBA.admin},aprobador:APROBADOR:${CLAVES_PRUEBA.aprobador}`,
++    RATE_LIMIT_MAX: String(opciones.rateLimitMax ?? 1000),
++  });
++  const redis = new RedisFalso();
++  const pool = new PoolFalso();
++  const metricas = new ServicioMetricas();
++  const jwt = new JwtService({
++    secret: cfg.jwt.secret,
++    signOptions: { expiresIn: cfg.jwt.expiresIn, algorithm: 'HS256' },
++    verifyOptions: { algorithms: ['HS256'] },
++  });
++
++  const modulo = await Test.createTestingModule({
++    controllers: [
++      SaludControlador,
++      MetricasControlador,
++      AuthControlador,
++      EjecucionesControlador,
++      AprobacionesControlador,
++      WebhooksControlador,
++    ],
++    providers: [
++      { provide: TOKENS.CONFIG, useValue: cfg },
++      { provide: TOKENS.POOL, useValue: pool },
++      { provide: TOKENS.REDIS, useValue: redis as unknown as Redis },
++      { provide: TOKENS.CLAVES, useValue: new RegistroClavesApi(cfg.apiKeys) },
++      { provide: TOKENS.AUDITORIA, useValue: env.auditoria },
++      { provide: JwtService, useValue: jwt },
++      { provide: ServicioMetricas, useValue: metricas },
++      { provide: VerificadorWebhook, useValue: new VerificadorWebhook(cfg.webhookSecret, redis as unknown as Redis) },
++      { provide: IniciarEjecucionCasoUso, useValue: env.iniciar },
++      { provide: ConsultasCasoUso, useValue: env.consultas },
++      { provide: ResolverAprobacionCasoUso, useValue: env.resolver },
++    ],
++  }).compile();
++
++  const app = modulo.createNestApplication<NestExpressApplication>({ rawBody: true });
++  app.use(middlewareCorrelacion);
++  app.use(crearMiddlewareMetricas(metricas));
++  app.useGlobalFilters(new FiltroProblemas(metricas));
++  await app.init();
++  return { app, env, redis, pool, metricas };
++}
+-- 
+2.55.0.windows.2
+

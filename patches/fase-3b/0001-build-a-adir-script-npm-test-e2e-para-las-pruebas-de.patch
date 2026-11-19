@@ -1,0 +1,30 @@
+From 00e3eff6f81f2c09d6ac2ec2ef6223fe6b56bb32 Mon Sep 17 00:00:00 2001
+From: CrysDevv <cryssdev@gmail.com>
+Date: Thu, 19 Nov 2026 18:32:13 -0300
+Subject: [PATCH 1/4] =?UTF-8?q?build:=20a=C3=B1adir=20script=20npm=20test:?=
+ =?UTF-8?q?e2e=20para=20las=20pruebas=20de=20extremo=20a=20extremo?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ services/core-nestjs/package.json | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/services/core-nestjs/package.json b/services/core-nestjs/package.json
+index 039abd8..bf376f8 100644
+--- a/services/core-nestjs/package.json
++++ b/services/core-nestjs/package.json
+@@ -13,7 +13,8 @@
+     "start:dev": "ts-node src/main.ts",
+     "typecheck": "tsc -p tsconfig.json --noEmit",
+     "test": "jest --runInBand",
+-    "test:cov": "jest --runInBand --coverage"
++    "test:cov": "jest --runInBand --coverage",
++    "test:e2e": "jest --runInBand --testPathPattern src/e2e"
+   },
+   "dependencies": {
+     "@aws-sdk/client-s3": "^3.650.0",
+-- 
+2.55.0.windows.2
+
