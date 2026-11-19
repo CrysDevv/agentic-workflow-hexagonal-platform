@@ -1,0 +1,175 @@
+From 994be4dbeb677e7475b3b6e4d8130a34d7bcc03a Mon Sep 17 00:00:00 2001
+From: CrysDevv <cryssdev@gmail.com>
+Date: Thu, 19 Nov 2026 18:42:39 -0300
+Subject: [PATCH 6/7] =?UTF-8?q?feat(security):=20aplicar=20NetworkPolicies?=
+ =?UTF-8?q?=20de=20denegaci=C3=B3n=20total=20con=20reglas=20m=C3=ADnimas?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ deploy/k8s/network-policies.yaml | 152 +++++++++++++++++++++++++++++++
+ 1 file changed, 152 insertions(+)
+ create mode 100644 deploy/k8s/network-policies.yaml
+
+diff --git a/deploy/k8s/network-policies.yaml b/deploy/k8s/network-policies.yaml
+new file mode 100644
+index 0000000..63487c4
+--- /dev/null
++++ b/deploy/k8s/network-policies.yaml
+@@ -0,0 +1,152 @@
++# Postura "denegar todo" y reglas mínimas explícitas.
++# Requiere un CNI con soporte de NetworkPolicy (Calico, Cilium, kube-router; k3s lo incluye).
++apiVersion: networking.k8s.io/v1
++kind: NetworkPolicy
++metadata:
++  name: default-deny-all
++spec:
++  podSelector: {}
++  policyTypes: ["Ingress", "Egress"]
++---
++apiVersion: networking.k8s.io/v1
++kind: NetworkPolicy
++metadata:
++  name: allow-dns
++spec:
++  podSelector: {}
++  policyTypes: ["Egress"]
++  egress:
++    - to:
++        - namespaceSelector:
++            matchLabels:
++              kubernetes.io/metadata.name: kube-system
++      ports:
++        - { protocol: UDP, port: 53 }
++        - { protocol: TCP, port: 53 }
++---
++apiVersion: networking.k8s.io/v1
++kind: NetworkPolicy
++metadata:
++  name: core-nestjs
++spec:
++  podSelector:
++    matchLabels:
++      app.kubernetes.io/name: core-nestjs
++  policyTypes: ["Ingress", "Egress"]
++  ingress:
++    # Controlador de ingreso (Traefik en kube-system o ingress-nginx) y Prometheus (monitoring).
++    - from:
++        - namespaceSelector:
++            matchExpressions:
++              - key: kubernetes.io/metadata.name
++                operator: In
++                values: ["kube-system", "ingress-nginx", "monitoring"]
++      ports:
++        - { protocol: TCP, port: 3000 }
++  egress:
++    - to:
++        - podSelector:
++            matchLabels:
++              app.kubernetes.io/name: postgres
++      ports:
++        - { protocol: TCP, port: 5432 }
++    - to:
++        - podSelector:
++            matchLabels:
++              app.kubernetes.io/name: redis
++      ports:
++        - { protocol: TCP, port: 6379 }
++    - to:
++        - podSelector:
++            matchLabels:
++              app.kubernetes.io/name: localstack
++      ports:
++        - { protocol: TCP, port: 4566 }
++    # Trazas OpenTelemetry hacia el Collector del stack de monitoreo.
++    - to:
++        - namespaceSelector:
++            matchLabels:
++              kubernetes.io/metadata.name: monitoring
++      ports:
++        - { protocol: TCP, port: 4318 }
++    # HTTPS público (API de Anthropic, AWS S3/SQS reales); sin acceso a rangos privados.
++    - to:
++        - ipBlock:
++            cidr: 0.0.0.0/0
++            except:
++              - 10.0.0.0/8
++              - 172.16.0.0/12
++              - 192.168.0.0/16
++              - 169.254.0.0/16
++      ports:
++        - { protocol: TCP, port: 443 }
++---
++apiVersion: networking.k8s.io/v1
++kind: NetworkPolicy
++metadata:
++  name: frontend-react
++spec:
++  podSelector:
++    matchLabels:
++      app.kubernetes.io/name: frontend-react
++  policyTypes: ["Ingress"]
++  ingress:
++    - from:
++        - namespaceSelector:
++            matchExpressions:
++              - key: kubernetes.io/metadata.name
++                operator: In
++                values: ["kube-system", "ingress-nginx"]
++      ports:
++        - { protocol: TCP, port: 5173 }
++---
++apiVersion: networking.k8s.io/v1
++kind: NetworkPolicy
++metadata:
++  name: postgres
++spec:
++  podSelector:
++    matchLabels:
++      app.kubernetes.io/name: postgres
++  policyTypes: ["Ingress"]
++  ingress:
++    - from:
++        - podSelector:
++            matchLabels:
++              app.kubernetes.io/name: core-nestjs
++      ports:
++        - { protocol: TCP, port: 5432 }
++---
++apiVersion: networking.k8s.io/v1
++kind: NetworkPolicy
++metadata:
++  name: redis
++spec:
++  podSelector:
++    matchLabels:
++      app.kubernetes.io/name: redis
++  policyTypes: ["Ingress"]
++  ingress:
++    - from:
++        - podSelector:
++            matchLabels:
++              app.kubernetes.io/name: core-nestjs
++      ports:
++        - { protocol: TCP, port: 6379 }
++---
++apiVersion: networking.k8s.io/v1
++kind: NetworkPolicy
++metadata:
++  name: localstack
++spec:
++  podSelector:
++    matchLabels:
++      app.kubernetes.io/name: localstack
++  policyTypes: ["Ingress"]
++  ingress:
++    - from:
++        - podSelector:
++            matchLabels:
++              app.kubernetes.io/name: core-nestjs
++      ports:
++        - { protocol: TCP, port: 4566 }
+-- 
+2.55.0.windows.2
+

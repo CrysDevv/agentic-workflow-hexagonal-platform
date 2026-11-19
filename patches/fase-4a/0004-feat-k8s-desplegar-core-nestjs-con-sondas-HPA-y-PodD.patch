@@ -1,0 +1,213 @@
+From fc8bcb47365a15ed4e0faeea06dbfdc413a56b05 Mon Sep 17 00:00:00 2001
+From: CrysDevv <cryssdev@gmail.com>
+Date: Thu, 19 Nov 2026 18:42:38 -0300
+Subject: [PATCH 4/7] feat(k8s): desplegar core-nestjs con sondas, HPA y
+ PodDisruptionBudget
+
+---
+ deploy/k8s/core-nestjs.yaml | 193 ++++++++++++++++++++++++++++++++++++
+ 1 file changed, 193 insertions(+)
+ create mode 100644 deploy/k8s/core-nestjs.yaml
+
+diff --git a/deploy/k8s/core-nestjs.yaml b/deploy/k8s/core-nestjs.yaml
+new file mode 100644
+index 0000000..b4f8df9
+--- /dev/null
++++ b/deploy/k8s/core-nestjs.yaml
+@@ -0,0 +1,193 @@
++apiVersion: v1
++kind: ServiceAccount
++metadata:
++  name: core-nestjs
++  labels:
++    app.kubernetes.io/name: core-nestjs
++    app.kubernetes.io/part-of: agentic-workflow-hexagonal-platform
++automountServiceAccountToken: false
++---
++apiVersion: v1
++kind: Service
++metadata:
++  name: core-nestjs
++  labels:
++    app.kubernetes.io/name: core-nestjs
++    app.kubernetes.io/component: backend
++    app.kubernetes.io/part-of: agentic-workflow-hexagonal-platform
++  annotations:
++    prometheus.io/scrape: "true"
++    prometheus.io/path: /metrics
++    prometheus.io/port: "3000"
++spec:
++  selector:
++    app.kubernetes.io/name: core-nestjs
++  ports:
++    - name: http
++      port: 3000
++      targetPort: http
++---
++apiVersion: apps/v1
++kind: Deployment
++metadata:
++  name: core-nestjs
++  labels:
++    app.kubernetes.io/name: core-nestjs
++    app.kubernetes.io/component: backend
++    app.kubernetes.io/part-of: agentic-workflow-hexagonal-platform
++spec:
++  replicas: 2
++  revisionHistoryLimit: 3
++  strategy:
++    type: RollingUpdate
++    rollingUpdate:
++      maxUnavailable: 0
++      maxSurge: 1
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: core-nestjs
++  template:
++    metadata:
++      labels:
++        app.kubernetes.io/name: core-nestjs
++        app.kubernetes.io/component: backend
++        app.kubernetes.io/part-of: agentic-workflow-hexagonal-platform
++    spec:
++      serviceAccountName: core-nestjs
++      automountServiceAccountToken: false
++      terminationGracePeriodSeconds: 30
++      securityContext:
++        runAsNonRoot: true
++        runAsUser: 10001
++        runAsGroup: 10001
++        fsGroup: 10001
++        seccompProfile:
++          type: RuntimeDefault
++      topologySpreadConstraints:
++        - maxSkew: 1
++          topologyKey: kubernetes.io/hostname
++          whenUnsatisfiable: ScheduleAnyway
++          labelSelector:
++            matchLabels:
++              app.kubernetes.io/name: core-nestjs
++      containers:
++        - name: core-nestjs
++          image: agentic/core-nestjs:local
++          imagePullPolicy: IfNotPresent
++          ports:
++            - name: http
++              containerPort: 3000
++          envFrom:
++            - configMapRef:
++                name: agentic-config
++          env:
++            - { name: PORT, value: "3000" }
++            - name: DATABASE_URL
++              valueFrom:
++                secretKeyRef: { name: agentic-secrets, key: DATABASE_URL }
++            - name: REDIS_URL
++              valueFrom:
++                secretKeyRef: { name: agentic-secrets, key: REDIS_URL }
++            - name: AWS_ACCESS_KEY_ID
++              valueFrom:
++                secretKeyRef: { name: agentic-secrets, key: AWS_ACCESS_KEY_ID }
++            - name: AWS_SECRET_ACCESS_KEY
++              valueFrom:
++                secretKeyRef: { name: agentic-secrets, key: AWS_SECRET_ACCESS_KEY }
++            - name: JWT_SECRET
++              valueFrom:
++                secretKeyRef: { name: agentic-secrets, key: JWT_SECRET }
++            - name: WEBHOOK_HMAC_SECRET
++              valueFrom:
++                secretKeyRef: { name: agentic-secrets, key: WEBHOOK_HMAC_SECRET }
++            - name: API_KEYS
++              valueFrom:
++                secretKeyRef: { name: agentic-secrets, key: API_KEYS }
++            - name: ANTHROPIC_API_KEY
++              valueFrom:
++                secretKeyRef: { name: agentic-secrets, key: ANTHROPIC_API_KEY }
++          securityContext:
++            allowPrivilegeEscalation: false
++            readOnlyRootFilesystem: true
++            capabilities:
++              drop: ["ALL"]
++          startupProbe:
++            httpGet:
++              path: /health
++              port: http
++            periodSeconds: 3
++            failureThreshold: 40
++            timeoutSeconds: 3
++          readinessProbe:
++            httpGet:
++              path: /health
++              port: http
++            periodSeconds: 5
++            timeoutSeconds: 3
++            failureThreshold: 3
++          livenessProbe:
++            tcpSocket:
++              port: http
++            periodSeconds: 10
++            timeoutSeconds: 3
++            failureThreshold: 6
++          resources:
++            requests: { cpu: 100m, memory: 256Mi }
++            limits: { cpu: "1", memory: 512Mi }
++          volumeMounts:
++            - { name: tmp, mountPath: /tmp }
++      volumes:
++        - name: tmp
++          emptyDir:
++            medium: Memory
++            sizeLimit: 64Mi
++---
++apiVersion: autoscaling/v2
++kind: HorizontalPodAutoscaler
++metadata:
++  name: core-nestjs
++  labels:
++    app.kubernetes.io/name: core-nestjs
++    app.kubernetes.io/part-of: agentic-workflow-hexagonal-platform
++spec:
++  scaleTargetRef:
++    apiVersion: apps/v1
++    kind: Deployment
++    name: core-nestjs
++  minReplicas: 2
++  maxReplicas: 6
++  metrics:
++    - type: Resource
++      resource:
++        name: cpu
++        target:
++          type: Utilization
++          averageUtilization: 70
++    - type: Resource
++      resource:
++        name: memory
++        target:
++          type: Utilization
++          averageUtilization: 80
++  behavior:
++    scaleUp:
++      stabilizationWindowSeconds: 30
++      policies:
++        - { type: Pods, value: 2, periodSeconds: 60 }
++    scaleDown:
++      stabilizationWindowSeconds: 300
++      policies:
++        - { type: Pods, value: 1, periodSeconds: 120 }
++---
++apiVersion: policy/v1
++kind: PodDisruptionBudget
++metadata:
++  name: core-nestjs
++  labels:
++    app.kubernetes.io/name: core-nestjs
++    app.kubernetes.io/part-of: agentic-workflow-hexagonal-platform
++spec:
++  minAvailable: 1
++  selector:
++    matchLabels:
++      app.kubernetes.io/name: core-nestjs
+-- 
+2.55.0.windows.2
+
