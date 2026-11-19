@@ -1,0 +1,330 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: localstack-init
+  labels:
+    app.kubernetes.io/part-of: agentic-workflow-hexagonal-platform
+data:
+  init-aws.sh: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+    REGION="${AWS_DEFAULT_REGION:-us-east-2}"
+    BUCKET="${S3_BUCKET:-agentic-artifacts}"
+    QUEUE="${SQS_QUEUE_NAME:-agentic-tasks}"
+    DLQ="${SQS_DLQ_NAME:-agentic-tasks-dlq}"
+    awslocal s3api create-bucket --bucket "${BUCKET}" --region "${REGION}" \
+      --create-bucket-configuration "LocationConstraint=${REGION}" >/dev/null 2>&1 || true
+    awslocal s3api put-bucket-versioning --bucket "${BUCKET}" --versioning-configuration Status=Enabled
+    awslocal sqs create-queue --queue-name "${DLQ}" --region "${REGION}" >/dev/null
+    DLQ_URL="$(awslocal sqs get-queue-url --queue-name "${DLQ}" --region "${REGION}" --query QueueUrl --output text)"
+    DLQ_ARN="$(awslocal sqs get-queue-attributes --queue-url "${DLQ_URL}" --attribute-names QueueArn --region "${REGION}" --query Attributes.QueueArn --output text)"
+    awslocal sqs create-queue --queue-name "${QUEUE}" --region "${REGION}" \
+      --attributes "{\"VisibilityTimeout\":\"60\",\"RedrivePolicy\":\"{\\\"deadLetterTargetArn\\\":\\\"${DLQ_ARN}\\\",\\\"maxReceiveCount\\\":\\\"5\\\"}\"}" >/dev/null
+    echo "[init-aws] Recursos listos"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: agentic-workflow-hexagonal-platform
+spec:
+  selector:
+    app.kubernetes.io/name: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: agentic-workflow-hexagonal-platform
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+        app.kubernetes.io/component: database
+        app.kubernetes.io/part-of: agentic-workflow-hexagonal-platform
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70
+        runAsGroup: 70
+        fsGroup: 70
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef: { name: agentic-secrets, key: POSTGRES_DB }
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef: { name: agentic-secrets, key: POSTGRES_USER }
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: agentic-secrets, key: POSTGRES_PASSWORD }
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: "1", memory: 1Gi }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+            - { name: init, mountPath: /docker-entrypoint-initdb.d, readOnly: true }
+            - { name: tmp, mountPath: /tmp }
+            - { name: run, mountPath: /var/run/postgresql }
+      volumes:
+        - name: init
+          configMap:
+            name: postgres-init
+        - name: tmp
+          emptyDir: { sizeLimit: 128Mi }
+        - name: run
+          emptyDir: { sizeLimit: 16Mi }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: queue-cache
+    app.kubernetes.io/part-of: agentic-workflow-hexagonal-platform
+spec:
+  selector:
+    app.kubernetes.io/name: redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: queue-cache
+    app.kubernetes.io/part-of: agentic-workflow-hexagonal-platform
+spec:
+  serviceName: redis
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis
+        app.kubernetes.io/component: queue-cache
+        app.kubernetes.io/part-of: agentic-workflow-hexagonal-platform
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - exec redis-server --requirepass "$REDIS_PASSWORD" --appendonly yes --save 60 1 --dir /data
+          ports:
+            - name: redis
+              containerPort: 6379
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: agentic-secrets, key: REDIS_PASSWORD }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 5
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: localstack
+  labels:
+    app.kubernetes.io/name: localstack
+    app.kubernetes.io/component: aws-emulator
+    app.kubernetes.io/part-of: agentic-workflow-hexagonal-platform
+spec:
+  selector:
+    app.kubernetes.io/name: localstack
+  ports:
+    - name: edge
+      port: 4566
+      targetPort: edge
+---
+# Solo desarrollo/demostración (costo $0). En producción se usa AWS S3/SQS real y este Deployment se elimina.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: localstack
+  labels:
+    app.kubernetes.io/name: localstack
+    app.kubernetes.io/component: aws-emulator
+    app.kubernetes.io/part-of: agentic-workflow-hexagonal-platform
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: localstack
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: localstack
+        app.kubernetes.io/component: aws-emulator
+        app.kubernetes.io/part-of: agentic-workflow-hexagonal-platform
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: localstack
+          image: localstack/localstack:3.8.1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: edge
+              containerPort: 4566
+          env:
+            - { name: SERVICES, value: "s3,sqs" }
+            - { name: DEBUG, value: "0" }
+            - name: DEFAULT_REGION
+              valueFrom:
+                configMapKeyRef: { name: agentic-config, key: AWS_REGION }
+            - name: AWS_DEFAULT_REGION
+              valueFrom:
+                configMapKeyRef: { name: agentic-config, key: AWS_REGION }
+            - name: S3_BUCKET
+              valueFrom:
+                configMapKeyRef: { name: agentic-config, key: S3_BUCKET }
+            - name: SQS_QUEUE_NAME
+              valueFrom:
+                configMapKeyRef: { name: agentic-config, key: SQS_QUEUE_NAME }
+            - name: SQS_DLQ_NAME
+              valueFrom:
+                configMapKeyRef: { name: agentic-config, key: SQS_DLQ_NAME }
+          securityContext:
+            allowPrivilegeEscalation: false
+          readinessProbe:
+            httpGet:
+              path: /_localstack/health
+              port: edge
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /_localstack/health
+              port: edge
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: "1", memory: 1Gi }
+          volumeMounts:
+            - name: init
+              mountPath: /etc/localstack/init/ready.d/init-aws.sh
+              subPath: init-aws.sh
+              readOnly: true
+            - { name: data, mountPath: /var/lib/localstack }
+            - { name: tmp, mountPath: /tmp/localstack }
+      volumes:
+        - name: init
+          configMap:
+            name: localstack-init
+            defaultMode: 493
+        - name: data
+          emptyDir: { sizeLimit: 512Mi }
+        - name: tmp
+          emptyDir: { sizeLimit: 512Mi }
