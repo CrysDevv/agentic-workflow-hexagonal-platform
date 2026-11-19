@@ -1,0 +1,68 @@
+# ADR-0003: Despliegue híbrido OCI Always Free + AWS
+
+- **Estado:** Aceptado
+- **Fecha:** 2026-11-19
+- **Decisores:** Autor del proyecto (CrysDevv)
+- **Etiquetas:** infraestructura, costos, terraform, kubernetes
+
+## Contexto
+
+El proyecto es una pieza de portafolio que debe poder demostrarse en un entorno real con **costo objetivo de $0 USD**,
+sin sacrificar prácticas de producción (endurecimiento, observabilidad, infraestructura como código).
+
+- **Oracle Cloud (OCI) Always Free** ofrece cómputo Ampere A1 (hasta 4 OCPU y 24 GB de RAM en total) sin vencimiento,
+  suficiente para un nodo Kubernetes ligero.
+- **AWS** aporta servicios gestionados (S3 y SQS) con capa gratuita para los volúmenes de una demostración; la región
+  elegida es `us-east-2`.
+- En desarrollo local se necesita reproducir ambos entornos sin cuentas ni costos.
+
+## Decisión
+
+Adoptar un **despliegue híbrido**, definido con Terraform:
+
+| Componente | Ubicación | Detalle |
+|---|---|---|
+| Cómputo (core-nestjs, frontend-react, PostgreSQL 16, Redis 7) | OCI Always Free | Instancia `VM.Standard.A1.Flex` (2 OCPU / 12 GB por defecto) con Ubuntu 22.04, VCN, subred pública y reglas de red mínimas; SSH restringido a `admin_cidr` (se rechaza `0.0.0.0/0`) |
+| Orquestación | Kubernetes ligero (k3s) sobre la instancia | Manifiestos en `deploy/k8s` (Kustomize): Deployments, HPA, PodDisruptionBudget, NetworkPolicies de denegación total y Pod Security Standards |
+| Artefactos y mensajería opcional | AWS `us-east-2` | Bucket S3 versionado, cifrado y sin acceso público; colas SQS con cifrado administrado y DLQ (`maxReceiveCount = 5`) |
+| Desarrollo local | Docker Compose + LocalStack | Emula S3/SQS; el mismo código usa `AWS_ENDPOINT_URL` para apuntar al emulador o a AWS real |
+| Observabilidad | Stack heredado (`monitoring/`) | Prometheus (`/metrics`), OpenTelemetry Collector y Grafana |
+
+Reglas operativas:
+
+1. La cola de tareas por defecto es **Redis** (`QUEUE_DRIVER=redis`), sin dependencia de AWS; SQS se activa con
+   `QUEUE_DRIVER=sqs` y `SQS_QUEUE_URL`.
+2. Los datos transaccionales permanecen en PostgreSQL dentro de OCI; AWS solo recibe artefactos (propuestas,
+   notificaciones) y mensajes.
+3. El adaptador LLM por defecto es `local-deterministic` (costo $0); `anthropic` es opcional y se paga por uso.
+4. Los secretos de `deploy/k8s/config.yaml` son valores de desarrollo; en producción se sustituyen por un gestor de
+   secretos (OCI Vault, Sealed Secrets o External Secrets).
+5. Las credenciales de AWS reales deben ser de mínimo privilegio (solo el bucket y las colas del proyecto).
+
+## Consecuencias
+
+**Positivas**
+
+- Costo operativo objetivo de $0 USD para la demostración, con Terraform reproducible y el mismo contenedor endurecido
+  (`non-root` UID 10001, `read_only`, `cap_drop: ALL`) en Compose y Kubernetes.
+- Separación clara de proveedores: la lógica no conoce OCI ni AWS gracias a los puertos del ADR-0001.
+
+**Negativas / riesgos**
+
+- **Nodo único:** una instancia Always Free es un punto único de falla; las réplicas y los HPA ofrecen resiliencia de
+  proceso, no de infraestructura. No hay alta disponibilidad real ni copias de seguridad automatizadas de PostgreSQL.
+- Los límites Always Free y la capa gratuita de AWS pueden cambiar o agotarse; conviene configurar alertas de presupuesto.
+  La capacidad Ampere A1 puede no estar disponible en una región en el momento del aprovisionamiento.
+- La latencia entre OCI (`sa-santiago-1` por defecto) y AWS `us-east-2` es mayor que dentro de un único proveedor.
+- LocalStack corre como root dentro del clúster y solo debe usarse en desarrollo; con AWS real se elimina y el namespace
+  puede endurecerse a `restricted`.
+- Terraform guarda el estado localmente en esta etapa; en uso colaborativo debe migrarse a un backend remoto con bloqueo.
+
+## Alternativas consideradas
+
+- **Todo en AWS:** simplifica la integración, pero el cómputo continuo supera la capa gratuita.
+- **Todo en OCI (Object Storage y Queue):** reduce a un solo proveedor, pero se prefirió AWS S3/SQS por su ubicuidad y por
+  la compatibilidad con LocalStack para pruebas locales.
+- **Servicios administrados (EKS/OKE, RDS):** mayor resiliencia, con costos incompatibles con el objetivo de $0.
+- **Solo Docker Compose en la VM:** válido y más simple; se adopta Kubernetes para demostrar HPA, NetworkPolicies y
+  despliegues sin tiempo de inactividad.
