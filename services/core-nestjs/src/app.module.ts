@@ -37,7 +37,8 @@ import {
   WebhooksControlador,
 } from './infrastructure/http/controllers';
 import { ServicioMetricas } from './infrastructure/http/http-support';
-import { LlmAnthropic, LlmLocalDeterminista } from './infrastructure/llm/llm.adapters';
+import { LlmDinamico, RedisAlmacenConfigLlm, ServicioConfigLlm } from './infrastructure/llm/llm-router';
+import { ConfiguracionLlmControlador } from './infrastructure/http/configuracion.controller';
 import {
   AlmacenS3,
   GeneradorUuid,
@@ -81,6 +82,7 @@ export class CierreRecursos implements OnApplicationShutdown {
     EjecucionesControlador,
     AprobacionesControlador,
     WebhooksControlador,
+    ConfiguracionLlmControlador,
   ],
   providers: [
     ServicioMetricas,
@@ -176,15 +178,21 @@ export class CierreRecursos implements OnApplicationShutdown {
     },
     { provide: TOKENS.FUENTE, useExisting: TOKENS.COLA },
 
+    // ---------- Configuración dinámica del LLM (seleccionable desde la consola) ----------
+    {
+      provide: ServicioConfigLlm,
+      inject: [TOKENS.CONFIG, TOKENS.REDIS],
+      useFactory: (cfg: AppConfig, redis: Redis): ServicioConfigLlm =>
+        new ServicioConfigLlm(cfg.llm, new RedisAlmacenConfigLlm(redis), cfg.jwt.secret),
+    },
+
     // ---------- Aplicación ----------
     { provide: GuardrailPromptInjection, useFactory: (): GuardrailPromptInjection => new GuardrailPromptInjection() },
     {
       provide: TOKENS.LLM,
-      inject: [TOKENS.CONFIG, GuardrailPromptInjection],
-      useFactory: (cfg: AppConfig, guardrail: GuardrailPromptInjection): LlmPuerto =>
-        cfg.llm.provider === 'anthropic'
-          ? new LlmAnthropic(cfg.llm.anthropicApiKey, cfg.llm.anthropicModel, guardrail)
-          : new LlmLocalDeterminista(),
+      inject: [ServicioConfigLlm, GuardrailPromptInjection],
+      useFactory: (servicio: ServicioConfigLlm, guardrail: GuardrailPromptInjection): LlmPuerto =>
+        new LlmDinamico(servicio, guardrail),
     },
     {
       provide: RegistroHerramientas,
