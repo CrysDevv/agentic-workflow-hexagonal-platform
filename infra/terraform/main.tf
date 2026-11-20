@@ -151,13 +151,24 @@ resource "oci_core_instance" "k3s_node" {
       #cloud-config
       package_update: true
       packages:
-        - docker.io
-        - docker-compose-v2
+        - curl
+        - ca-certificates
         - fail2ban
         - ufw
       runcmd:
-        - systemctl enable --now docker
         - systemctl enable --now fail2ban
+        - ufw allow 22/tcp
+        - ufw allow 80/tcp
+        - ufw allow 443/tcp
+        - ufw --force enable
+        - mkdir -p /opt/agentic/k8s
+        - |
+          if [ "${var.runtime_orchestrator}" = "k3s" ]; then
+            curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="server --write-kubeconfig-mode 644" sh -
+          else
+            apt-get install -y docker.io docker-compose-v2
+            systemctl enable --now docker
+          fi
     CLOUDINIT
     )
   }

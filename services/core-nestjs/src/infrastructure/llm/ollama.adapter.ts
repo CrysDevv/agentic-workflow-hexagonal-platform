@@ -37,6 +37,9 @@ export class LlmOllama implements LlmPuerto {
     ].join('\n');
 
     const usuario = this.guardrail.envolverContenidoNoConfiable('contexto_ejecucion', {
+      flujo: ctx.flujo,
+      origen: ctx.origen ?? 'API',
+      correlationId: ctx.correlationId ?? null,
       entrada: ctx.entrada,
       historial: ctx.historial,
       pasoActual: ctx.pasoActual,

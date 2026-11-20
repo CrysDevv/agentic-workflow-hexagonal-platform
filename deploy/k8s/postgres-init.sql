@@ -137,8 +137,14 @@ INSERT INTO flujos_definicion (nombre, descripcion, herramientas_permitidas, umb
  ('compra-administrativa',
   'Gestiona solicitudes de compra internas con validación presupuestaria y notificación.',
   ARRAY['consultar_catalogo','validar_umbral_presupuestario','notificar'],
-  2500.00)
-ON CONFLICT (nombre) DO NOTHING;
+  2500.00),
+ ('asistente-operativo',
+  'Inspecciona el estado de la plataforma, historial de ejecuciones, propuestas en S3, catálogo y auditoría de seguridad.',
+  ARRAY['consultar_flujos_disponibles','consultar_historial_ejecuciones','consultar_propuestas_emitidas','consultar_auditoria_y_estado','consultar_catalogo','consultar_proveedores','cotizar_items_catalogo','notificar'],
+  5000.00)
+ON CONFLICT (nombre) DO UPDATE SET
+  descripcion = EXCLUDED.descripcion,
+  herramientas_permitidas = EXCLUDED.herramientas_permitidas;
 
 INSERT INTO catalogo_proveedores (nombre, categoria, sku, descripcion, precio_unitario_usd, plazo_entrega_dias, calificacion, pais) VALUES
  ('TecnoSur SpA',        'hardware',    'HW-LAP-001', 'Laptop empresarial 14" 16GB RAM',        1150.00,  5, 4.6, 'CL'),

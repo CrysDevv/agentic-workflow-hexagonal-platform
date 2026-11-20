@@ -1,0 +1,86 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  --surface-canvas: #060913;
+  --surface-elevated: rgba(13, 19, 34, 0.84);
+  --surface-card: rgba(15, 23, 42, 0.72);
+  --border-subtle: rgba(148, 163, 184, 0.12);
+}
+
+@layer base {
+  body {
+    background-color: var(--surface-canvas);
+    background-image:
+      radial-gradient(ellipse 80% 50% at 50% -20%, rgba(14, 165, 233, 0.14), transparent),
+      radial-gradient(ellipse 60% 40% at 90% 10%, rgba(99, 102, 241, 0.08), transparent);
+    background-attachment: fixed;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    @apply text-slate-100 antialiased;
+  }
+
+  code, pre, .font-mono {
+    font-variant-ligatures: none;
+  }
+}
+
+@layer components {
+  .panel-glass {
+    background: var(--surface-card);
+    border: 1px solid var(--border-subtle);
+    box-shadow:
+      0 1px 0 0 rgba(255, 255, 255, 0.04) inset,
+      0 12px 32px -12px rgba(2, 6, 23, 0.75);
+    backdrop-filter: blur(12px);
+  }
+
+  .panel-elevated {
+    background: var(--surface-elevated);
+    border: 1px solid rgba(148, 163, 184, 0.16);
+    box-shadow:
+      0 1px 0 0 rgba(255, 255, 255, 0.05) inset,
+      0 20px 45px -15px rgba(2, 6, 23, 0.85);
+    backdrop-filter: blur(16px);
+  }
+
+  .input-pro {
+    @apply rounded-lg border border-slate-700/80 bg-slate-950/90 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 transition duration-150 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500/20;
+  }
+
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg bg-gradient-to-b from-sky-500 to-sky-600 px-3.5 py-2 text-sm font-medium text-white shadow-sm shadow-sky-950/60 transition duration-150 hover:from-sky-400 hover:to-sky-500 active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg border border-slate-700/80 bg-slate-800/80 px-3.5 py-2 text-sm font-medium text-slate-200 transition duration-150 hover:border-slate-600 hover:bg-slate-800 hover:text-white active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .btn-success {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg bg-gradient-to-b from-emerald-500 to-emerald-600 px-3.5 py-2 text-sm font-medium text-white shadow-sm shadow-emerald-950/60 transition duration-150 hover:from-emerald-400 hover:to-emerald-500 active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .btn-danger {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg border border-rose-500/30 bg-rose-950/60 px-3.5 py-2 text-sm font-medium text-rose-200 transition duration-150 hover:border-rose-500/60 hover:bg-rose-900/60 hover:text-white active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50;
+  }
+}
+
+/* Scrollbars refinados */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.4);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.35);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.55);
+}

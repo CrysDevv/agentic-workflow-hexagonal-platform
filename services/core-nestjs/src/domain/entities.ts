@@ -22,6 +22,11 @@ export const NOMBRES_HERRAMIENTA = [
   'validar_umbral_presupuestario',
   'emitir_propuesta_comercial',
   'notificar',
+  'consultar_flujos_disponibles',
+  'consultar_historial_ejecuciones',
+  'consultar_propuestas_emitidas',
+  'consultar_auditoria_y_estado',
+  'cotizar_items_catalogo',
 ] as const;
 export type NombreHerramienta = (typeof NOMBRES_HERRAMIENTA)[number];
 

@@ -25,6 +25,7 @@ crash.log
 
 # Logs y sistema
 *.log
+.setup/
 npm-debug.log*
 .DS_Store
 Thumbs.db

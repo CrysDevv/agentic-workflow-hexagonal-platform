@@ -15,6 +15,7 @@ import type {
 export interface FlujoRepositorio {
   obtenerPorNombre(nombre: string): Promise<FlujoDefinicion | null>;
   obtenerPorId(id: string): Promise<FlujoDefinicion | null>;
+  listarActivos?(): Promise<FlujoDefinicion[]>;
 }
 
 export interface EjecucionRepositorio {
@@ -51,8 +52,18 @@ export interface CatalogoProveedoresRepositorio {
 }
 
 // ---------------- Servicios externos ----------------
+export interface RegistroAuditoriaLeido extends EventoAuditoria {
+  readonly id: number;
+  readonly creadoEn: Date;
+}
+
 export interface AuditoriaPuerto {
   registrar(evento: EventoAuditoria): Promise<void>;
+  listarRecientes?(filtro: {
+    limite: number;
+    tipoEvento?: string;
+    severidad?: string;
+  }): Promise<RegistroAuditoriaLeido[]>;
 }
 
 export interface NotificadorPuerto {
@@ -62,6 +73,8 @@ export interface NotificadorPuerto {
 export interface AlmacenPropuestasPuerto {
   /** Persiste el documento y devuelve su ubicación (por ejemplo s3://bucket/clave). */
   guardar(clave: string, contenido: JsonObjeto): Promise<string>;
+  listar?(prefijo: string, limite: number): Promise<string[]>;
+  leer?(clave: string): Promise<JsonObjeto | null>;
 }
 
 export interface ColaTareasPuerto {
@@ -79,9 +92,19 @@ export interface GeneradorIdPuerto {
 // ---------------- Puerto LLM ----------------
 export interface ContextoRazonamiento {
   readonly ejecucionId: string;
-  readonly flujo: { readonly nombre: string; readonly descripcion: string };
+  readonly correlationId?: string;
+  readonly origen?: string;
+  readonly flujo: {
+    readonly nombre: string;
+    readonly descripcion: string;
+    readonly umbralAprobacionUsd?: number;
+  };
   readonly entrada: JsonObjeto;
-  readonly herramientas: ReadonlyArray<{ readonly nombre: NombreHerramienta; readonly descripcion: string }>;
+  readonly herramientas: ReadonlyArray<{
+    readonly nombre: NombreHerramienta;
+    readonly descripcion: string;
+    readonly esquemaEntrada?: string;
+  }>;
   readonly historial: ReadonlyArray<{
     readonly orden: number;
     readonly herramienta: string;

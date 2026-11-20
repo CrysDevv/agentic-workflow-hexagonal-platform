@@ -1,6 +1,7 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import {
   ForbiddenException,
+  ServiceUnavailableException,
   HttpException,
   HttpStatus,
   Inject,
@@ -123,6 +124,15 @@ export class AutenticacionGuard implements CanActivate {
 }
 
 // ============================== Rate limiting (Redis, ventana fija) ==============================
+function extraerIpCliente(req: SolicitudApp): string {
+  const ip = typeof req.ip === 'string' && req.ip.trim() !== '' ? req.ip.trim() : undefined;
+  if (ip !== undefined) {
+    return ip.startsWith('::ffff:') ? ip.slice(7) : ip;
+  }
+  const remoto = req.socket?.remoteAddress;
+  return typeof remoto === 'string' && remoto !== '' ? remoto : 'desconocida';
+}
+
 @Injectable()
 export class LimitadorTasaGuard implements CanActivate {
   constructor(
@@ -138,12 +148,20 @@ export class LimitadorTasaGuard implements CanActivate {
     const ventana = this.cfg.rateLimit.windowSeconds;
     const max = this.cfg.rateLimit.max;
     const cubeta = Math.floor(Date.now() / (ventana * 1000));
-    const clave = `agentic:rl:${req.ip ?? 'desconocida'}:${cubeta}`;
+    const clave = `agentic:rl:${extraerIpCliente(req)}:${cubeta}`;
 
-    const resultado = await this.redis.multi().incr(clave).expire(clave, ventana + 1).exec();
+    let resultado: Array<[Error | null, unknown]> | null;
+    try {
+      resultado = await this.redis.multi().incr(clave).expire(clave, ventana + 1).exec();
+    } catch {
+      res.setHeader('Retry-After', '5');
+      throw new ServiceUnavailableException('El limitador de tasa no está disponible temporalmente');
+    }
+
     const primero = resultado === null ? undefined : resultado[0];
     if (primero === undefined || primero[0] !== null) {
-      throw new Error('El limitador de tasa no está disponible');
+      res.setHeader('Retry-After', '5');
+      throw new ServiceUnavailableException('El limitador de tasa no está disponible temporalmente');
     }
     const cuenta = Number(primero[1]);
 

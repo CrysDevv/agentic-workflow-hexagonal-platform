@@ -155,4 +155,44 @@ describe('LlmAnthropic', () => {
       await expect(llm.decidir(contexto(ENTRADA))).rejects.toThrow();
     }
   });
+
+  it('soporta bloques nativos tool_use de Anthropic y texto con llaves adicionales', async () => {
+    const fetchToolUse = crearFetch({
+      content: [
+        {
+          type: 'tool_use',
+          id: 'toolu_01',
+          name: 'emitir_decision_agente',
+          input: {
+            tipo: 'HERRAMIENTA',
+            herramienta: 'consultar_catalogo',
+            entrada: { limite: 10 },
+            razonamiento: 'Inspección estructurada',
+          },
+        },
+      ],
+    });
+    const llmTool = new LlmAnthropic('k', 'm', guardrail, fetchToolUse as unknown as typeof fetch);
+    expect(await llmTool.decidir(contexto(ENTRADA))).toEqual({
+      tipo: 'HERRAMIENTA',
+      herramienta: 'consultar_catalogo',
+      entrada: { limite: 10 },
+      razonamiento: 'Inspección estructurada',
+    });
+
+    const fetchConLlavesExtra = crearFetch({
+      content: [
+        {
+          type: 'text',
+          text: 'Analizando {"tipo":"HERRAMIENTA","herramienta":"consultar_catalogo","entrada":{"limite":3},"razonamiento":"OK"} y nota adicional {ignorar}',
+        },
+      ],
+    });
+    const llmTexto = new LlmAnthropic('k', 'm', guardrail, fetchConLlavesExtra as unknown as typeof fetch);
+    expect(await llmTexto.decidir(contexto(ENTRADA))).toMatchObject({
+      tipo: 'HERRAMIENTA',
+      herramienta: 'consultar_catalogo',
+      entrada: { limite: 3 },
+    });
+  });
 });

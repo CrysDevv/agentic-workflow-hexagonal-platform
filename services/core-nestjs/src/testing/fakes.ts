@@ -109,7 +109,15 @@ export const CATALOGO_SEMILLA: readonly ProveedorCatalogo[] = [
 
 // ============================== Repositorios en memoria ==============================
 export class FlujoMemoria implements FlujoRepositorio {
-  constructor(private readonly flujos: readonly FlujoDefinicion[]) {}
+  private readonly flujos: FlujoDefinicion[];
+
+  constructor(flujos: readonly FlujoDefinicion[]) {
+    this.flujos = [...flujos];
+  }
+
+  agregar(flujo: FlujoDefinicion): void {
+    this.flujos.push(flujo);
+  }
 
   async obtenerPorNombre(nombre: string): Promise<FlujoDefinicion | null> {
     return this.flujos.find((f) => f.nombre === nombre) ?? null;
@@ -117,6 +125,10 @@ export class FlujoMemoria implements FlujoRepositorio {
 
   async obtenerPorId(id: string): Promise<FlujoDefinicion | null> {
     return this.flujos.find((f) => f.id === id) ?? null;
+  }
+
+  async listarActivos(): Promise<FlujoDefinicion[]> {
+    return this.flujos.filter((f) => f.activo);
   }
 }
 
@@ -222,6 +234,18 @@ export class AuditoriaMemoria implements AuditoriaPuerto {
   tipos(): string[] {
     return this.eventos.map((e) => e.tipoEvento);
   }
+
+  async listarRecientes(filtro: { limite: number; tipoEvento?: string; severidad?: string }) {
+    return [...this.eventos]
+      .reverse()
+      .filter(
+        (e) =>
+          (filtro.tipoEvento === undefined || e.tipoEvento === filtro.tipoEvento) &&
+          (filtro.severidad === undefined || e.severidad === filtro.severidad),
+      )
+      .slice(0, filtro.limite)
+      .map((e, idx) => ({ ...e, id: idx + 1, creadoEn: new Date('2026-01-15T12:00:00.000Z') }));
+  }
 }
 
 export class NotificadorMemoria implements NotificadorPuerto {
@@ -238,6 +262,14 @@ export class AlmacenMemoria implements AlmacenPropuestasPuerto {
   async guardar(clave: string, contenido: JsonObjeto): Promise<string> {
     this.documentos.set(clave, contenido);
     return `mem://${clave}`;
+  }
+
+  async listar(prefijo: string, limite: number): Promise<string[]> {
+    return [...this.documentos.keys()].filter((k) => k.startsWith(prefijo)).reverse().slice(0, limite);
+  }
+
+  async leer(clave: string): Promise<JsonObjeto | null> {
+    return this.documentos.get(clave) ?? null;
   }
 }
 
@@ -358,7 +390,7 @@ export function crearEntorno(opciones: { llm?: LlmPuerto; maxPasos?: number } = 
   const cola = new ColaMemoria();
   const guardrail = new GuardrailPromptInjection();
   const llm: LlmPuerto = opciones.llm ?? new LlmGuionado([]);
-  const herramientas = crearRegistroHerramientas({ catalogo, notificador, almacen, ids, reloj });
+  const herramientas = crearRegistroHerramientas({ catalogo, notificador, almacen, ids, reloj, ejecuciones, aprobaciones, flujos, auditoria });
   const motor = new MotorAgente(
     { ejecuciones, pasos, aprobaciones, flujos, llm, herramientas, guardrail, auditoria, reloj, ids },
     opciones.maxPasos,

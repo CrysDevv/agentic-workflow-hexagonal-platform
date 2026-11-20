@@ -90,3 +90,14 @@ variable "s3_bucket_name" {
   description = "Nombre globalmente único del bucket S3 de artefactos"
   type        = string
 }
+
+variable "runtime_orchestrator" {
+  description = "Orquestador en el nodo OCI: k3s (recomendado, usa deploy/k8s) o compose"
+  type        = string
+  default     = "k3s"
+
+  validation {
+    condition     = contains(["k3s", "compose"], var.runtime_orchestrator)
+    error_message = "runtime_orchestrator debe ser 'k3s' o 'compose'."
+  }
+}

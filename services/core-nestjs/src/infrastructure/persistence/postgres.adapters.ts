@@ -5,6 +5,7 @@ import {
   AprobacionHumana,
   Dinero,
   EjecucionAgente,
+  ErrorTransicionInvalida,
   PasoEjecucion,
   esNombreHerramienta,
   type EstadoAprobacion,
@@ -24,6 +25,7 @@ import type {
   FiltroCatalogo,
   FlujoRepositorio,
   PasoRepositorio,
+  RegistroAuditoriaLeido,
 } from '../../domain/ports';
 
 const textoJson = (valor: JsonObjeto): string => JSON.stringify(valor);
@@ -71,6 +73,13 @@ export class FlujoPostgres implements FlujoRepositorio {
     const r = await this.pool.query<FilaFlujo>(`SELECT ${COLUMNAS_FLUJO} FROM flujos_definicion WHERE id = $1`, [id]);
     const fila = r.rows[0];
     return fila === undefined ? null : aFlujo(fila);
+  }
+
+  async listarActivos(): Promise<FlujoDefinicion[]> {
+    const r = await this.pool.query<FilaFlujo>(
+      `SELECT ${COLUMNAS_FLUJO} FROM flujos_definicion WHERE activo = TRUE ORDER BY nombre ASC`,
+    );
+    return r.rows.map(aFlujo);
   }
 }
 
@@ -272,29 +281,43 @@ export class AprobacionPostgres implements AprobacionRepositorio {
 
   async guardar(aprobacion: AprobacionHumana): Promise<void> {
     const d = aprobacion.snapshot();
-    await this.pool.query(
-      `INSERT INTO aprobaciones_humanas
-         (id, ejecucion_id, paso_id, accion_propuesta, motivo, monto_usd, estado, solicitado_en, resuelto_en, resuelto_por, comentario)
-       VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10, $11)
-       ON CONFLICT (id) DO UPDATE SET
-         estado = EXCLUDED.estado,
-         resuelto_en = EXCLUDED.resuelto_en,
-         resuelto_por = EXCLUDED.resuelto_por,
-         comentario = EXCLUDED.comentario`,
-      [
-        d.id,
-        d.ejecucionId,
-        d.pasoId,
-        textoJson(d.accionPropuesta),
-        d.motivo,
-        d.montoUsd,
-        d.estado,
-        d.solicitadoEn,
-        d.resueltoEn,
-        d.resueltoPor,
-        d.comentario,
-      ],
+    if (d.estado === 'PENDIENTE') {
+      await this.pool.query(
+        `INSERT INTO aprobaciones_humanas
+           (id, ejecucion_id, paso_id, accion_propuesta, motivo, monto_usd, estado, solicitado_en, resuelto_en, resuelto_por, comentario)
+         VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10, $11)
+         ON CONFLICT (id) DO NOTHING`,
+        [
+          d.id,
+          d.ejecucionId,
+          d.pasoId,
+          textoJson(d.accionPropuesta),
+          d.motivo,
+          d.montoUsd,
+          d.estado,
+          d.solicitadoEn,
+          d.resueltoEn,
+          d.resueltoPor,
+          d.comentario,
+        ],
+      );
+      return;
+    }
+
+    // Actualización condicional atómica: solo una réplica puede transicionar desde PENDIENTE.
+    const resultado = await this.pool.query(
+      `UPDATE aprobaciones_humanas
+          SET estado = $2,
+              resuelto_en = $3,
+              resuelto_por = $4,
+              comentario = $5
+        WHERE id = $1
+          AND estado = 'PENDIENTE'`,
+      [d.id, d.estado, d.resueltoEn, d.resueltoPor, d.comentario],
     );
+    if ((resultado.rowCount ?? 0) === 0) {
+      throw new ErrorTransicionInvalida('aprobacion', 'RESUELTA', d.estado);
+    }
   }
 
   async obtenerPorId(id: string): Promise<AprobacionHumana | null> {
@@ -416,5 +439,51 @@ export class AuditoriaPostgres implements AuditoriaPuerto {
         `No se pudo registrar el evento de auditoría ${evento.tipoEvento}: ${error instanceof Error ? error.message : 'error desconocido'}`,
       );
     }
+  }
+
+  async listarRecientes(filtro: {
+    limite: number;
+    tipoEvento?: string;
+    severidad?: string;
+  }): Promise<RegistroAuditoriaLeido[]> {
+    const condiciones: string[] = [];
+    const params: unknown[] = [];
+    if (filtro.tipoEvento !== undefined) {
+      params.push(filtro.tipoEvento);
+      condiciones.push(`tipo_evento = $${params.length}`);
+    }
+    if (filtro.severidad !== undefined) {
+      params.push(filtro.severidad);
+      condiciones.push(`severidad = $${params.length}`);
+    }
+    params.push(Math.max(1, Math.min(filtro.limite, 100)));
+    const where = condiciones.length > 0 ? `WHERE ${condiciones.join(' AND ')}` : '';
+    const r = await this.pool.query<{
+      id: string;
+      tipo_evento: string;
+      severidad: 'INFO' | 'WARN' | 'ALTA' | 'CRITICA';
+      actor: string | null;
+      ip_origen: string | null;
+      correlation_id: string | null;
+      detalle: JsonObjeto;
+      creado_en: Date;
+    }>(
+      `SELECT id, tipo_evento, severidad, actor, ip_origen::text, correlation_id, detalle, creado_en
+         FROM auditoria_seguridad
+         ${where}
+        ORDER BY creado_en DESC
+        LIMIT $${params.length}`,
+      params,
+    );
+    return r.rows.map((f) => ({
+      id: Number(f.id),
+      tipoEvento: f.tipo_evento,
+      severidad: f.severidad,
+      actor: f.actor,
+      ipOrigen: f.ip_origen,
+      correlationId: f.correlation_id,
+      detalle: f.detalle,
+      creadoEn: f.creado_en,
+    }));
   }
 }

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { PutObjectCommand, type S3Client } from '@aws-sdk/client-s3';
+import { GetObjectCommand, ListObjectsV2Command, PutObjectCommand, type S3Client } from '@aws-sdk/client-s3';
 import { DeleteMessageCommand, ReceiveMessageCommand, SendMessageCommand, type SQSClient } from '@aws-sdk/client-sqs';
 import { Logger, type OnApplicationBootstrap, type OnApplicationShutdown } from '@nestjs/common';
 import type { Redis } from 'ioredis';
@@ -45,6 +45,32 @@ export class AlmacenS3 implements AlmacenPropuestasPuerto {
     );
     return `s3://${this.bucket}/${clave}`;
   }
+
+  async listar(prefijo: string, limite: number): Promise<string[]> {
+    const r = await this.s3.send(
+      new ListObjectsV2Command({
+        Bucket: this.bucket,
+        Prefix: prefijo,
+        MaxKeys: Math.max(1, Math.min(limite, 100)),
+      }),
+    );
+    return (r.Contents ?? [])
+      .sort((a, b) => (b.LastModified?.getTime() ?? 0) - (a.LastModified?.getTime() ?? 0))
+      .map((item) => item.Key)
+      .filter((k): k is string => typeof k === 'string');
+  }
+
+  async leer(clave: string): Promise<JsonObjeto | null> {
+    try {
+      const r = await this.s3.send(new GetObjectCommand({ Bucket: this.bucket, Key: clave }));
+      if (r.Body === undefined) return null;
+      const texto = await r.Body.transformToString('utf-8');
+      const valor: unknown = JSON.parse(texto);
+      return typeof valor === 'object' && valor !== null && !Array.isArray(valor) ? (valor as JsonObjeto) : null;
+    } catch {
+      return null;
+    }
+  }
 }
 
 /** Bandeja de salida durable en S3: cada notificación se persiste como documento JSON. */
@@ -83,6 +109,7 @@ export interface FuenteTareas {
   siguiente(): Promise<TareaCola | null>;
   confirmar(tarea: TareaCola): Promise<void>;
   descartar(tarea: TareaCola): Promise<void>;
+  recuperarHuerfanas?(): Promise<number>;
   cerrar(): Promise<void>;
 }
 
@@ -107,18 +134,25 @@ function interpretar(cuerpo: string): { ejecucionId: string; correlationId: stri
 
 const COLA = 'agentic:cola:tareas';
 const PROCESANDO = 'agentic:cola:procesando';
+const LEASES = 'agentic:cola:leases';
 const MUERTAS = 'agentic:cola:muertas';
+const VISIBILIDAD_POR_DEFECTO_MS = 60_000;
+const MAX_REINTENTOS_HUERFANA = 3;
 
 export class RedisCola implements ColaCompleta {
   private readonly bloqueante: Redis;
+  private readonly log = new Logger('RedisCola');
 
-  constructor(private readonly redis: Redis) {
+  constructor(
+    private readonly redis: Redis,
+    private readonly visibilidadMs: number = VISIBILIDAD_POR_DEFECTO_MS,
+  ) {
     this.bloqueante = redis.duplicate({ maxRetriesPerRequest: null });
     this.bloqueante.on('error', () => undefined);
   }
 
   async encolar(ejecucionId: string, correlationId: string): Promise<void> {
-    await this.redis.lpush(COLA, JSON.stringify({ ejecucionId, correlationId }));
+    await this.redis.lpush(COLA, JSON.stringify({ ejecucionId, correlationId, reintentos: 0 }));
   }
 
   async siguiente(): Promise<TareaCola | null> {
@@ -126,20 +160,58 @@ export class RedisCola implements ColaCompleta {
     if (crudo === null) return null;
     const tarea = interpretar(crudo);
     if (tarea === null) {
-      await this.redis.lrem(PROCESANDO, 1, crudo);
-      await this.redis.lpush(MUERTAS, crudo);
+      await this.redis.multi().lrem(PROCESANDO, 1, crudo).zrem(LEASES, crudo).lpush(MUERTAS, crudo).exec();
       return null;
     }
+    await this.redis.zadd(LEASES, Date.now() + this.visibilidadMs, crudo);
     return { ...tarea, recibo: crudo };
   }
 
   async confirmar(tarea: TareaCola): Promise<void> {
-    await this.redis.lrem(PROCESANDO, 1, tarea.recibo);
+    await this.redis.multi().lrem(PROCESANDO, 1, tarea.recibo).zrem(LEASES, tarea.recibo).exec();
   }
 
   async descartar(tarea: TareaCola): Promise<void> {
-    await this.redis.lrem(PROCESANDO, 1, tarea.recibo);
-    await this.redis.lpush(MUERTAS, tarea.recibo);
+    await this.redis
+      .multi()
+      .lrem(PROCESANDO, 1, tarea.recibo)
+      .zrem(LEASES, tarea.recibo)
+      .lpush(MUERTAS, tarea.recibo)
+      .exec();
+  }
+
+  /** Reencola tareas cuyo lease expiró por caída/reinicio de un pod (o las envía a DLQ tras max reintentos). */
+  async recuperarHuerfanas(ahoraMs: number = Date.now()): Promise<number> {
+    const expiradas = await this.redis.zrangebyscore(LEASES, '-inf', ahoraMs, 'LIMIT', 0, 25);
+    let recuperadas = 0;
+    for (const crudo of expiradas) {
+      const quitada = await this.redis.zrem(LEASES, crudo);
+      if (quitada === 0) continue; // otra réplica ya reclamó esta tarea expirada
+      await this.redis.lrem(PROCESANDO, 1, crudo);
+
+      let reintentos = 0;
+      let payload: Record<string, unknown> | null = null;
+      try {
+        const parsed: unknown = JSON.parse(crudo);
+        if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+          payload = parsed as Record<string, unknown>;
+          reintentos = typeof payload['reintentos'] === 'number' ? payload['reintentos'] : 0;
+        }
+      } catch {
+        payload = null;
+      }
+
+      if (payload === null || reintentos >= MAX_REINTENTOS_HUERFANA) {
+        await this.redis.lpush(MUERTAS, crudo);
+        this.log.warn(`Tarea huérfana enviada a DLQ (${MUERTAS}) tras ${reintentos} reintentos`);
+      } else {
+        const siguientePayload = JSON.stringify({ ...payload, reintentos: reintentos + 1 });
+        await this.redis.lpush(COLA, siguientePayload);
+        this.log.warn(`Tarea huérfana reencolada (intento ${reintentos + 1}/${MAX_REINTENTOS_HUERFANA})`);
+      }
+      recuperadas += 1;
+    }
+    return recuperadas;
   }
 
   async cerrar(): Promise<void> {
@@ -209,8 +281,19 @@ export class TrabajadorCola implements OnApplicationBootstrap, OnApplicationShut
     private readonly alFinalizar: (ejecucion: EjecucionProps) => void,
   ) {}
 
+  private temporizadorReaper: ReturnType<typeof setInterval> | null = null;
+
   onApplicationBootstrap(): void {
     this.activo = true;
+    if (this.fuente.recuperarHuerfanas !== undefined) {
+      void this.fuente.recuperarHuerfanas().catch(() => undefined);
+      this.temporizadorReaper = setInterval(() => {
+        if (this.activo && this.fuente.recuperarHuerfanas !== undefined) {
+          void this.fuente.recuperarHuerfanas().catch(() => undefined);
+        }
+      }, 15_000);
+      this.temporizadorReaper.unref();
+    }
     this.bucle = this.correr();
   }
 
@@ -220,6 +303,10 @@ export class TrabajadorCola implements OnApplicationBootstrap, OnApplicationShut
 
   async detener(): Promise<void> {
     this.activo = false;
+    if (this.temporizadorReaper !== null) {
+      clearInterval(this.temporizadorReaper);
+      this.temporizadorReaper = null;
+    }
     if (this.bucle !== null) {
       await this.bucle;
       this.bucle = null;

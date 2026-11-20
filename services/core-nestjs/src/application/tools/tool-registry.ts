@@ -8,7 +8,11 @@ import {
 } from '../../domain/entities';
 import type {
   AlmacenPropuestasPuerto,
+  AprobacionRepositorio,
+  AuditoriaPuerto,
   CatalogoProveedoresRepositorio,
+  EjecucionRepositorio,
+  FlujoRepositorio,
   GeneradorIdPuerto,
   NotificadorPuerto,
   RelojPuerto,
@@ -21,6 +25,10 @@ export interface DependenciasHerramientas {
   readonly almacen: AlmacenPropuestasPuerto;
   readonly ids: GeneradorIdPuerto;
   readonly reloj: RelojPuerto;
+  readonly ejecuciones?: EjecucionRepositorio;
+  readonly aprobaciones?: AprobacionRepositorio;
+  readonly flujos?: FlujoRepositorio;
+  readonly auditoria?: AuditoriaPuerto;
 }
 
 export interface ContextoHerramienta {

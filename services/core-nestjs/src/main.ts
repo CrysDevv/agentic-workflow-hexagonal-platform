@@ -31,6 +31,7 @@ async function arrancar(): Promise<void> {
   });
 
   app.disable('x-powered-by');
+  app.set('trust proxy', Number.parseInt(process.env['TRUST_PROXY_HOPS'] ?? '1', 10) || 1);
   app.use(helmet());
   app.use(middlewareCorrelacion);
 

@@ -279,7 +279,13 @@ export class MotorAgente {
   ): ContextoRazonamiento {
     return {
       ejecucionId: ejecucion.id,
-      flujo: { nombre: flujo.nombre, descripcion: flujo.descripcion },
+      correlationId: ejecucion.correlationId,
+      origen: ejecucion.snapshot().origen,
+      flujo: {
+        nombre: flujo.nombre,
+        descripcion: flujo.descripcion,
+        umbralAprobacionUsd: flujo.umbralAprobacion.usd,
+      },
       entrada: ejecucion.entrada,
       herramientas: this.d.herramientas
         .disponiblesPara(flujo.herramientasPermitidas)
