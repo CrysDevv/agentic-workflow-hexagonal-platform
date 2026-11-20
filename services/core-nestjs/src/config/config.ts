@@ -50,10 +50,13 @@ export interface AppConfig {
   readonly jwt: { readonly secret: string; readonly expiresIn: string };
   readonly webhookSecret: string;
   readonly rateLimit: { readonly max: number; readonly windowSeconds: number };
+  /** Valores por defecto del LLM; pueden sustituirse en caliente desde la consola (pestaña Modelo de IA). */
   readonly llm: {
-    readonly provider: 'local-deterministic' | 'anthropic';
+    readonly provider: 'local-deterministic' | 'anthropic' | 'ollama';
     readonly anthropicApiKey: string;
     readonly anthropicModel: string;
+    readonly ollamaBaseUrl: string;
+    readonly ollamaModel: string;
   };
   readonly apiKeys: readonly ClaveApiConfig[];
   readonly corsOrigins: readonly string[];
@@ -115,8 +118,8 @@ export function cargarConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   if (webhookSecret.length < 32) throw new Error('WEBHOOK_HMAC_SECRET debe tener al menos 32 caracteres');
 
   const proveedor = (env['LLM_PROVIDER'] ?? 'local-deterministic').trim();
-  if (proveedor !== 'local-deterministic' && proveedor !== 'anthropic') {
-    throw new Error('LLM_PROVIDER debe ser local-deterministic o anthropic');
+  if (proveedor !== 'local-deterministic' && proveedor !== 'anthropic' && proveedor !== 'ollama') {
+    throw new Error('LLM_PROVIDER debe ser local-deterministic, ollama o anthropic');
   }
   const anthropicApiKey = (env['ANTHROPIC_API_KEY'] ?? '').trim();
   if (proveedor === 'anthropic' && anthropicApiKey === '') {
@@ -151,9 +154,11 @@ export function cargarConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       windowSeconds: entero(env, 'RATE_LIMIT_WINDOW_SECONDS', 60, 1, 3600),
     },
     llm: {
-      provider: proveedor === 'anthropic' ? 'anthropic' : 'local-deterministic',
+      provider: proveedor === 'anthropic' ? 'anthropic' : proveedor === 'ollama' ? 'ollama' : 'local-deterministic',
       anthropicApiKey,
       anthropicModel: (env['ANTHROPIC_MODEL'] ?? 'claude-sonnet-4-5').trim(),
+      ollamaBaseUrl: (env['OLLAMA_BASE_URL'] ?? 'http://ollama:11434').trim().replace(/\/+$/, ''),
+      ollamaModel: (env['OLLAMA_MODEL'] ?? 'llama3.2:3b').trim(),
     },
     apiKeys: parsearClaves(requerida(env, 'API_KEYS')),
     corsOrigins: (env['CORS_ORIGINS'] ?? 'http://localhost:5173,http://127.0.0.1:5173')
