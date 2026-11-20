@@ -110,6 +110,21 @@ flowchart TB
     VM --> Mon["Prometheus · OTel · Grafana"]
 ```
 
+## Selección del modelo de IA
+
+El proyecto arranca **sin ninguna API Key de IA**. Desde la consola (pestaña **Modelo de IA**, rol ADMIN) se elige el proveedor
+en caliente, sin reiniciar y para todas las réplicas:
+
+| Proveedor | Requisitos | Costo |
+|---|---|---|
+| Determinista local (por defecto) | Ninguno | $0 |
+| Ollama (modelos locales) | `docker compose --profile ollama up -d` y `docker compose exec ollama ollama pull llama3.2:3b` (o `./scripts/setup.sh --with-ollama`) | $0 |
+| API de Anthropic (Claude) | API Key de Anthropic, que se guarda cifrada (AES-256-GCM) en Redis y nunca se muestra de nuevo | Pago por uso |
+
+Los valores iniciales salen de `LLM_PROVIDER`, `OLLAMA_BASE_URL`, `OLLAMA_MODEL` y `ANTHROPIC_*`; la selección hecha en la consola
+tiene prioridad. Los modelos locales pequeños pueden equivocarse al invocar herramientas: el motor valida cada decisión, aplica la
+lista blanca y el guardrail, y falla de forma controlada.
+
 ## Seguridad
 
 | Amenaza | Control |
@@ -141,6 +156,21 @@ docker compose up --build
 | LocalStack | http://localhost:4566 |
 
 Abra la consola e ingrese la API Key `ADMIN` o `APROBADOR` definida en `API_KEYS` (formato `nombre:ROL:clave`).
+
+### Instalación automática
+
+Un solo comando genera `.env` con secretos aleatorios, instala dependencias, ejecuta typecheck, pruebas y build,
+levanta `docker compose` y corre la prueba de humo:
+
+```bash
+./scripts/setup.sh
+```
+
+Opciones: `--skip-tests`, `--skip-docker`, `--skip-smoke`, `--reset-env`, `--down` y `--clean`
+(`./scripts/setup.sh --help`). Al terminar muestra las URLs y las API Keys generadas.
+
+Cada ejecución guarda una copia trazable en `.setup/setup-YYYYMMDD-HHMMSS.log`. Si ocurre un error, el mensaje
+incluye hora, estado, línea/comando y la ruta del registro. Los archivos `.setup/` están excluidos de Git.
 
 ### Prueba de humo
 
@@ -174,7 +204,7 @@ Perfiles: `smoke`, `load`, `stress`. Desde una sola IP eleve `RATE_LIMIT_MAX`; d
 
 ```bash
 docker build -f docker/Dockerfile.node20 -t agentic/core-nestjs:local services/core-nestjs
-docker build -f docker/Dockerfile.node20 -t agentic/frontend-react:local frontend-react
+docker build -f docker/Dockerfile.frontend-node20 -t agentic/frontend-react:local frontend-react
 kubectl apply -k deploy/k8s
 ```
 

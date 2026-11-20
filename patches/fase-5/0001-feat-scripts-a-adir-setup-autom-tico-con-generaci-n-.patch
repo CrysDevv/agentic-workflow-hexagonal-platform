@@ -1,0 +1,268 @@
+From efbde7934f1ecd4433691127a733eac566da3811 Mon Sep 17 00:00:00 2001
+From: CrysDevv <cryssdev@gmail.com>
+Date: Fri, 20 Nov 2026 01:09:02 -0300
+Subject: [PATCH 1/7] =?UTF-8?q?feat(scripts):=20a=C3=B1adir=20setup=20auto?=
+ =?UTF-8?q?m=C3=A1tico=20con=20generaci=C3=B3n=20de=20.env,=20validaci?=
+ =?UTF-8?q?=C3=B3n=20local,=20docker=20compose,=20prueba=20de=20humo=20y?=
+ =?UTF-8?q?=20opci=C3=B3n=20--with-ollama?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ scripts/setup.sh | 243 +++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 243 insertions(+)
+ create mode 100755 scripts/setup.sh
+
+diff --git a/scripts/setup.sh b/scripts/setup.sh
+new file mode 100755
+index 0000000..4a2ffff
+--- /dev/null
++++ b/scripts/setup.sh
+@@ -0,0 +1,243 @@
++#!/usr/bin/env bash
++# Configuración automática del proyecto:
++#   1) valida requisitos  2) genera .env con secretos aleatorios  3) instala dependencias
++#   4) typecheck, pruebas y build  5) levanta docker compose  6) ejecuta la prueba de humo
++set -euo pipefail
++cd "$(dirname "${BASH_SOURCE[0]}")/.."
++
++mkdir -p .setup
++REGISTRO=".setup/setup-$(date +%Y%m%d-%H%M%S).log"
++: > "$REGISTRO"
++
++trazar_error() {
++  local estado="$1" linea="$2" comando="$3"
++  printf '\n  \033[31m✗ ERROR DE SETUP\033[0m\n' >&2
++  printf '    Hora: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" >&2
++  printf '    Estado: %s | Línea: %s\n' "$estado" "$linea" >&2
++  printf '    Comando: %s\n' "$comando" >&2
++  printf '    Registro: %s\n' "$REGISTRO" >&2
++  return 1
++}
++
++trap 'trazar_error "$?" "$LINENO" "$BASH_COMMAND"' ERR
++
++if command -v tee >/dev/null 2>&1; then
++  exec > >(tee -a "$REGISTRO") 2>&1
++fi
++
++SKIP_TESTS=0
++WITH_OLLAMA=0
++PERFIL_COMPOSE=""
++SKIP_DOCKER=0
++SKIP_SMOKE=0
++RESET_ENV=0
++ACCION=instalar
++
++uso() {
++  cat << 'AYUDA'
++Uso: ./scripts/setup.sh [opciones]
++
++  (sin opciones)   Instala, valida, levanta el stack y ejecuta la prueba de humo
++  --skip-tests     Omite typecheck, pruebas unitarias/integración/E2E y build local
++  --skip-docker    No levanta docker compose (ni la prueba de humo)
++  --with-ollama    Levanta también Ollama (perfil "ollama") y descarga el modelo local
++  --skip-smoke     Levanta docker compose pero omite la prueba de humo
++  --reset-env      Regenera .env (guarda copia en .env.bak)
++  --down           Detiene el stack (docker compose down)
++  --clean          Detiene el stack y elimina volúmenes (borra los datos)
++  -h, --help       Muestra esta ayuda
++AYUDA
++}
++
++for arg in "$@"; do
++  case "$arg" in
++    --skip-tests) SKIP_TESTS=1 ;;
++    --with-ollama) WITH_OLLAMA=1; PERFIL_COMPOSE="--profile ollama" ;;
++    --skip-docker) SKIP_DOCKER=1 ;;
++    --skip-smoke) SKIP_SMOKE=1 ;;
++    --reset-env) RESET_ENV=1 ;;
++    --down) ACCION=down ;;
++    --clean) ACCION=clean ;;
++    -h | --help) uso; exit 0 ;;
++    *) echo "Opción desconocida: $arg"; uso; exit 1 ;;
++  esac
++done
++
++INICIO="$(date +%s)"
++paso() { printf '\n\033[1;36m▶ %s\033[0m\n' "$1"; }
++ok() { printf '  \033[32m✓\033[0m %s\n' "$1"; }
++aviso() { printf '  \033[33m!\033[0m %s\n' "$1"; }
++fallo() {
++  printf '  \033[31m✗ %s\033[0m\n' "$1" >&2
++  trazar_error 1 "$LINENO" "$1"
++  exit 1
++}
++
++# ---------- Acciones de apagado ----------
++if [ "$ACCION" = "down" ]; then
++  paso 'Deteniendo el stack'
++  docker compose --profile ollama down
++  ok 'stack detenido (los datos se conservan)'
++  exit 0
++fi
++if [ "$ACCION" = "clean" ]; then
++  paso 'Deteniendo el stack y eliminando volúmenes'
++  docker compose --profile ollama down -v
++  ok 'stack detenido y datos eliminados'
++  exit 0
++fi
++
++# ---------- 1. Requisitos ----------
++paso 'Verificando requisitos'
++for cmd in node npm openssl curl awk sed; do
++  command -v "$cmd" >/dev/null 2>&1 || fallo "falta '$cmd' en el PATH"
++done
++VERSION_NODE="$(node -p "process.versions.node.split('.')[0]")"
++[ "$VERSION_NODE" -ge 20 ] || fallo "se requiere Node.js >= 20 (detectado: $(node -v))"
++ok "Node.js $(node -v), npm $(npm -v)"
++
++if [ "$SKIP_DOCKER" = "0" ]; then
++  command -v docker >/dev/null 2>&1 || fallo "falta 'docker' (use --skip-docker para omitirlo)"
++  docker compose version >/dev/null 2>&1 || fallo "se requiere Docker Compose v2 ('docker compose')"
++  docker info >/dev/null 2>&1 || fallo "el demonio de Docker no responde (¿Docker Desktop iniciado?)"
++  ok "$(docker compose version --short 2>/dev/null | sed 's/^/Docker Compose /')"
++fi
++
++# ---------- 2. Archivo .env ----------
++paso 'Configurando .env'
++
++aleatorio() { openssl rand -hex "$1"; }
++
++fijar() {
++  local clave="$1" valor="$2"
++  local temporal=".env.tmp.$$"
++  awk -F= -v clave="$clave" -v valor="$valor" '
++    index($0, clave "=") == 1 { print clave "=" valor; reemplazada=1; siguiente=0; next }
++    { print }
++    END { if (!reemplazada) print clave "=" valor }
++  ' .env > "$temporal"
++  mv "$temporal" .env
++}
++
++if [ -f .env ] && [ "$RESET_ENV" = "0" ]; then
++  ok '.env ya existe: se conserva (use --reset-env para regenerarlo)'
++else
++  if [ -f .env ]; then
++    cp .env .env.bak
++    aviso 'copia del .env anterior guardada en .env.bak'
++  fi
++  [ -f .env.example ] || fallo 'no existe .env.example'
++  cp .env.example .env
++  fijar POSTGRES_PASSWORD "$(aleatorio 24)"
++  fijar REDIS_PASSWORD "$(aleatorio 24)"
++  fijar JWT_SECRET "$(aleatorio 48)"
++  fijar WEBHOOK_HMAC_SECRET "$(aleatorio 32)"
++  fijar API_KEYS "admin:ADMIN:$(aleatorio 24),aprobador:APROBADOR:$(aleatorio 24)"
++  # La prueba de humo y las de carga se lanzan desde una sola IP: se evita el 429 del rate limiting local.
++  fijar RATE_LIMIT_MAX 1000
++  ok '.env generado con secretos aleatorios (openssl rand)'
++fi
++
++clave_por_rol() {
++  grep -E '^API_KEYS=' .env | tail -1 | cut -d= -f2- | tr -d '\r' | tr ',' '\n' | awk -F: -v r="$1" '$2==r {print $3; exit}'
++}
++valor_env() { grep -E "^$1=" .env | tail -1 | cut -d= -f2- | tr -d '\r'; }
++
++ADMIN_KEY="$(clave_por_rol ADMIN)"
++APROBADOR_KEY="$(clave_por_rol APROBADOR)"
++[ -n "$ADMIN_KEY" ] && [ -n "$APROBADOR_KEY" ] || fallo 'API_KEYS en .env no define roles ADMIN y APROBADOR'
++ok 'API_KEYS con roles ADMIN y APROBADOR presentes'
++
++# ---------- 3. Dependencias ----------
++instalar() {
++  local dir="$1"
++  if [ -f "$dir/package-lock.json" ]; then
++    (cd "$dir" && npm ci --no-audit --no-fund)
++  else
++    (cd "$dir" && npm install --no-audit --no-fund)
++    aviso "se generó $dir/package-lock.json: confírmelo en git (el Dockerfile usa instalación reproducible)"
++  fi
++}
++
++paso 'Instalando dependencias del backend (services/core-nestjs)'
++instalar services/core-nestjs
++ok 'dependencias del backend instaladas'
++
++paso 'Instalando dependencias del frontend (frontend-react)'
++instalar frontend-react
++ok 'dependencias del frontend instaladas'
++
++# ---------- 4. Validación local ----------
++if [ "$SKIP_TESTS" = "0" ]; then
++  paso 'Backend: typecheck'
++  (cd services/core-nestjs && npm run typecheck)
++  ok 'typecheck del backend sin errores'
++
++  paso 'Backend: pruebas unitarias e integración'
++  (cd services/core-nestjs && npm test)
++  ok 'pruebas del backend superadas'
++
++  paso 'Backend: pruebas E2E en memoria'
++  (cd services/core-nestjs && npm run test:e2e)
++  ok 'pruebas E2E superadas'
++
++  paso 'Backend: build de producción'
++  (cd services/core-nestjs && npm run build)
++  ok 'build del backend generado'
++
++  paso 'Frontend: typecheck y build'
++  (cd frontend-react && npm run typecheck && npm run build)
++  ok 'frontend compilado'
++else
++  aviso 'validación local omitida (--skip-tests)'
++fi
++
++# ---------- 5. Stack con Docker Compose ----------
++if [ "$SKIP_DOCKER" = "0" ]; then
++  paso 'Construyendo y levantando el stack (docker compose up --build -d)'
++  docker compose ${PERFIL_COMPOSE} up --build -d
++  ok 'contenedores iniciados'
++  if [ "$WITH_OLLAMA" = "1" ]; then
++    paso "Descargando el modelo de Ollama (puede tardar varios minutos)"
++    MODELO_OLLAMA="$(valor_env OLLAMA_MODEL)"; MODELO_OLLAMA="${MODELO_OLLAMA:-llama3.2:3b}"
++    docker compose --profile ollama exec -T ollama ollama pull "$MODELO_OLLAMA" || fallo "no se pudo descargar el modelo de Ollama"
++    ok "modelo ${MODELO_OLLAMA} disponible (selecciónalo en la pestaña Modelo de IA)"
++  fi
++
++  # ---------- 6. Prueba de humo ----------
++  if [ "$SKIP_SMOKE" = "0" ]; then
++    paso 'Ejecutando la prueba de humo (scripts/smoke_test.sh)'
++    if ! bash scripts/smoke_test.sh; then
++      printf '\n--- últimos registros de core-nestjs ---\n' >&2
++      docker compose logs --tail 60 core-nestjs >&2 || true
++      fallo 'la prueba de humo falló (revise los registros anteriores)'
++    fi
++    ok 'prueba de humo superada'
++  else
++    aviso 'prueba de humo omitida (--skip-smoke)'
++  fi
++else
++  aviso 'docker compose omitido (--skip-docker)'
++fi
++
++# ---------- Resumen ----------
++DURACION=$(( $(date +%s) - INICIO ))
++CORE_PORT="$(valor_env CORE_PORT)"; CORE_PORT="${CORE_PORT:-3000}"
++FRONTEND_PORT="$(valor_env FRONTEND_PORT)"; FRONTEND_PORT="${FRONTEND_PORT:-5173}"
++
++printf '\n\033[1;32m✔ Configuración completada en %ss\033[0m\n' "$DURACION"
++if [ "$SKIP_DOCKER" = "0" ]; then
++  cat << RESUMEN
++
++  Consola (React) : http://localhost:${FRONTEND_PORT}
++  API (NestJS)    : http://localhost:${CORE_PORT}  (/health, /metrics)
++
++  API Key ADMIN     : ${ADMIN_KEY}
++  API Key APROBADOR : ${APROBADOR_KEY}
++
++  Detener el stack  : ./scripts/setup.sh --down
++  Borrar los datos  : ./scripts/setup.sh --clean
++RESUMEN
++fi
++printf '\n  Las claves están en .env (excluido de git). No las compartas.\n'
++printf '\n  Registro de ejecución: %s\n' "$REGISTRO"
+-- 
+2.55.0.windows.2
+

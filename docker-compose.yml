@@ -123,6 +123,8 @@ services:
       LLM_PROVIDER: ${LLM_PROVIDER:-local-deterministic}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-5}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
       OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-core-nestjs}
     ports:
@@ -148,7 +150,7 @@ services:
   frontend-react:
     build:
       context: ./frontend-react
-      dockerfile: ../docker/Dockerfile.node20
+      dockerfile: ../docker/Dockerfile.frontend-node20
     image: agentic/frontend-react:local
     container_name: agentic-frontend-react
     restart: unless-stopped
@@ -165,6 +167,32 @@ services:
     networks:
       - frontend
 
+  # Opcional (perfil "ollama"): modelos locales sin API Key. Activar con: docker compose --profile ollama up -d
+  # Ollama necesita root para escribir su caché de modelos; se compensa con cap_drop, no-new-privileges y read_only.
+  ollama:
+    image: ollama/ollama:latest
+    container_name: agentic-ollama
+    profiles: ["ollama"]
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "127.0.0.1:11434:11434"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - backend
+
 networks:
   backend:
     driver: bridge
@@ -175,3 +203,4 @@ volumes:
   postgres_data:
   redis_data:
   localstack_data:
+  ollama_data:

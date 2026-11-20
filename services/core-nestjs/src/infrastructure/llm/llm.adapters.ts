@@ -166,7 +166,7 @@ export class LlmLocalDeterminista implements LlmPuerto {
 }
 
 // ============================== Adaptador Anthropic Claude ==============================
-const ENTRADAS_HERRAMIENTAS: Readonly<Record<string, string>> = {
+export const ENTRADAS_HERRAMIENTAS: Readonly<Record<string, string>> = {
   consultar_proveedores: '{"categoria"?: string, "limite"?: entero 1-25}',
   consultar_catalogo: '{"categoria"?: string, "texto"?: string, "sku"?: string, "limite"?: entero 1-25}',
   validar_umbral_presupuestario: '{"montoUsd": número >= 0}',
@@ -190,7 +190,7 @@ function extraerTexto(cuerpo: unknown): string {
   throw new Error('La respuesta de Anthropic no contiene texto');
 }
 
-function interpretarDecision(texto: string): DecisionAgente {
+export function interpretarDecision(texto: string): DecisionAgente {
   const inicio = texto.indexOf('{');
   const fin = texto.lastIndexOf('}');
   if (inicio < 0 || fin <= inicio) throw new Error('La respuesta del modelo no contiene un objeto JSON');
