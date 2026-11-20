@@ -10,9 +10,10 @@ import {
   type Paso,
   type RespuestaCruda,
 } from './api';
+import ConfigLlm from './ConfigLlm';
 
 type Objeto = Record<string, unknown>;
-type Pestana = 'bandeja' | 'trazador' | 'simulador';
+type Pestana = 'bandeja' | 'trazador' | 'simulador' | 'modelo';
 
 // ============================== Utilidades ==============================
 const CLAVE_SESION = 'agentic:apikey';
@@ -909,6 +910,7 @@ const PESTANAS: ReadonlyArray<{ id: Pestana; nombre: string }> = [
   { id: 'bandeja', nombre: 'Bandeja Human-in-the-Loop' },
   { id: 'trazador', nombre: 'Trazador de ejecución' },
   { id: 'simulador', nombre: 'Simulador de Webhooks y Seguridad' },
+  { id: 'modelo', nombre: 'Modelo de IA' },
 ];
 
 export default function App() {
@@ -968,6 +970,7 @@ export default function App() {
             {pestana === 'bandeja' && <Bandeja apiKey={apiKey} alVerTraza={verTraza} />}
             {pestana === 'trazador' && <Trazador apiKey={apiKey} seleccion={seleccion} alSeleccionar={setSeleccion} />}
             {pestana === 'simulador' && <Simulador apiKey={apiKey} />}
+            {pestana === 'modelo' && <ConfigLlm apiKey={apiKey} />}
           </>
         )}
       </main>
