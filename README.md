@@ -1,6 +1,6 @@
 # agentic-workflow-hexagonal-platform
 
-**Última versión publicada:** [v1.2.0](https://github.com/CrysDevv/agentic-workflow-hexagonal-platform/releases/tag/v1.2.0)
+**Última versión publicada:** [v1.3.0](https://github.com/CrysDevv/agentic-workflow-hexagonal-platform/releases/tag/v1.3.0)
 
 Plataforma empresarial de automatización de procesos comerciales y administrativos mediante **agentes de IA con Tool
 Calling**, **Human-in-the-Loop**, **webhooks firmados** y **defensa OWASP** (anti-prompt-injection). Arquitectura hexagonal
