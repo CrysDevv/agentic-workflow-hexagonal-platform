@@ -164,8 +164,15 @@ export default function ConfigLlm({ apiKey }: { apiKey: string }) {
                   : 'panel-glass hover:border-slate-700'
               }`}
             >
-              <span className="inline-block rounded border border-slate-700/80 bg-slate-900/90 px-2 py-0.5 font-mono text-[10px] font-semibold tracking-wider text-sky-300">
-                {o.etiqueta}
+              <span className="flex items-start justify-between gap-2">
+                <span className="inline-block rounded border border-slate-700/80 bg-slate-900/90 px-2 py-0.5 font-mono text-[10px] font-semibold tracking-wider text-sky-300">
+                  {o.etiqueta}
+                </span>
+                {seleccionado && (
+                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-sky-400 text-slate-950">
+                    <IconoCheck className="h-3 w-3" />
+                  </span>
+                )}
               </span>
               <p className="mt-2.5 text-base font-semibold text-white">{o.titulo}</p>
               <p className="mt-1 text-xs leading-relaxed text-slate-400">{o.detalle}</p>
