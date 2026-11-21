@@ -37,6 +37,16 @@
   code, pre, .font-mono {
     font-variant-ligatures: none;
   }
+
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+  }
+
+  ::selection {
+    background: rgba(56, 189, 248, 0.28);
+    color: var(--text-primary);
+  }
 }
 
 @layer components {
@@ -76,6 +86,14 @@
     @apply inline-flex items-center justify-center gap-2 rounded-lg border border-rose-500/30 bg-rose-950/60 px-3.5 py-2 text-sm font-medium text-rose-200 transition duration-150 hover:border-rose-500/60 hover:bg-rose-900/60 hover:text-white active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50;
   }
 
+  .btn-primary:focus-visible,
+  .btn-secondary:focus-visible,
+  .btn-success:focus-visible,
+  .btn-danger:focus-visible,
+  .app-nav-button:focus-visible {
+    outline-offset: 2px;
+  }
+
   .app-shell {
     display: grid;
     grid-template-columns: 232px minmax(0, 1fr);
@@ -100,6 +118,8 @@
   .app-nav-button[data-active="true"] {
     border-color: rgba(56, 189, 248, 0.18);
     background: rgba(56, 189, 248, 0.09);
+    color: var(--text-primary);
+    font-weight: 600;
   }
 }
 

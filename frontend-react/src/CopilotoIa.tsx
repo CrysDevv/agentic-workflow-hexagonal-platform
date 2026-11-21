@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, api, esRegistro, type EstadoEjecucion, type Paso } from './api';
+import { CabeceraSeccion } from './ui';
 
 type Objeto = Record<string, unknown>;
 
@@ -23,12 +24,12 @@ const PROMPTS_RAPIDOS: ReadonlyArray<{ etiqueta: string; flujo: string; entrada:
     },
   },
   {
-    etiqueta: 'Cotizar 3 laptops y 5 licencias (con validación HITL)',
+    etiqueta: 'Cotizar 5 laptops y 5 licencias (requiere aprobación HITL)',
     flujo: 'cotizacion-comercial',
     entrada: {
       cliente: 'Innovación Austral SpA',
       items: [
-        { sku: 'HW-LAP-001', cantidad: 3 },
+        { sku: 'HW-LAP-001', cantidad: 5 },
         { sku: 'SW-LIC-010', cantidad: 5 },
       ],
       notificarA: 'compras@austral.cl',
@@ -99,13 +100,10 @@ export default function CopilotoIa({
 
   return (
     <section className="space-y-6">
-      <div>
-        <h2 className="text-lg font-semibold text-white">Copiloto IA de Lectura y Operación</h2>
-        <p className="text-sm text-slate-400">
-          Interactúa directamente con el agente. Ahora puede leer PostgreSQL (flujos, ejecuciones, catálogo, auditoría)
-          y Object Storage S3 (propuestas emitidas) bajo los mismos guardrails OWASP LLM01 y controles HITL.
-        </p>
-      </div>
+      <CabeceraSeccion
+        titulo="Copiloto IA de Lectura y Operación"
+        subtitulo="Interactúa con el agente sobre PostgreSQL y Object Storage S3 bajo los mismos guardrails OWASP LLM01 y controles HITL."
+      />
 
       <div className="panel-elevated rounded-xl p-5 space-y-3">
         <div className="flex flex-wrap gap-2">
@@ -121,7 +119,7 @@ export default function CopilotoIa({
                 }
                 lanzar.mutate({ flujo: p.flujo, entrada: p.entrada });
               }}
-              className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs text-slate-300 transition hover:border-sky-500 hover:text-white"
+              className="rounded-lg border border-slate-700/90 bg-slate-950/80 px-3 py-2 text-xs font-medium text-slate-300 transition hover:border-sky-500/60 hover:bg-slate-900 hover:text-white"
             >
               {p.etiqueta}
             </button>
@@ -134,7 +132,7 @@ export default function CopilotoIa({
             <select
               value={flujo}
               onChange={(e) => setFlujo(e.target.value)}
-              className="w-full input-pro w-full"
+              className="input-pro w-full"
             >
               <option value="asistente-operativo">asistente-operativo (lectura)</option>
               <option value="cotizacion-comercial">cotizacion-comercial</option>
@@ -147,7 +145,7 @@ export default function CopilotoIa({
               value={clienteFiltro}
               onChange={(e) => setClienteFiltro(e.target.value)}
               placeholder="Ej. Acme SA"
-              className="w-full input-pro w-full"
+              className="input-pro w-full"
             />
           </div>
         </div>
@@ -159,7 +157,7 @@ export default function CopilotoIa({
             onChange={(e) => setPregunta(e.target.value)}
             rows={3}
             placeholder="Describe qué deseas que la IA inspeccione o ejecute..."
-            className="w-full input-pro w-full"
+            className="input-pro w-full"
           />
         </div>
 
@@ -174,7 +172,7 @@ export default function CopilotoIa({
             type="button"
             disabled={lanzar.isPending}
             onClick={enviarConsulta}
-            className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-sky-500 disabled:opacity-50"
+            className="btn-primary"
           >
             {lanzar.isPending ? 'Enviando al agente…' : 'Consultar al agente'}
           </button>

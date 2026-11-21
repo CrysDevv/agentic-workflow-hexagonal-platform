@@ -195,7 +195,7 @@ function Conexion({ apiKey, alCambiar }: { apiKey: string; alCambiar: (clave: st
 
   return (
     <form
-      className="flex items-center gap-2"
+      className="flex min-w-0 items-center gap-2"
       onSubmit={(e) => {
         e.preventDefault();
         const clave = borrador.trim();
@@ -931,8 +931,8 @@ function PruebasInyeccion({ apiKey }: { apiKey: string }) {
       </div>
 
       {resultados.length > 0 && (
-        <div className="mt-4 overflow-hidden rounded-lg border border-slate-800/90">
-          <table className="w-full text-left text-xs">
+        <div className="mt-4 overflow-x-auto rounded-lg border border-slate-800/90">
+          <table className="min-w-[680px] w-full text-left text-xs">
             <thead className="bg-slate-950/90 text-[11px] uppercase tracking-wider text-slate-400">
               <tr>
                 <th className="px-3 py-2">Vector</th>
@@ -1077,7 +1077,7 @@ export default function App() {
   return (
     <div className="min-h-screen flex flex-col">
       <header className="sticky top-0 z-30 h-auto border-b border-slate-800/80 bg-[#090d14]/95 backdrop-blur-xl lg:h-[73px]">
-        <div className="mx-auto flex h-auto min-h-[64px] items-center justify-between gap-3 px-4 py-3 sm:px-6 lg:h-[72px] lg:max-w-[1600px]">
+        <div className="mx-auto flex h-auto min-h-[64px] flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6 lg:h-[72px] lg:flex-nowrap lg:max-w-[1600px]">
           <div className="flex min-w-0 items-center gap-3">
             <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-slate-700/80 bg-slate-900 text-sky-400">
               <IconoCpu className="h-5 w-5" />

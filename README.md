@@ -1,8 +1,13 @@
 # agentic-workflow-hexagonal-platform
 
+**Última versión publicada:** [v1.2.0](https://github.com/CrysDevv/agentic-workflow-hexagonal-platform/releases/tag/v1.2.0)
+
 Plataforma empresarial de automatización de procesos comerciales y administrativos mediante **agentes de IA con Tool
 Calling**, **Human-in-the-Loop**, **webhooks firmados** y **defensa OWASP** (anti-prompt-injection). Arquitectura hexagonal
 sobre NestJS, consola operativa en React y despliegue endurecido con Docker, Kubernetes y Terraform (OCI Always Free + AWS).
+
+La consola incluye un preset del copiloto para cotizar cinco laptops y cinco licencias (USD 6.230): al superar el umbral
+de USD 5.000, la propuesta queda pausada hasta que una persona la apruebe o rechace en la bandeja Human-in-the-Loop.
 
 ## Qué resuelve
 
